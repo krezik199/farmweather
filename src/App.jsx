@@ -329,7 +329,7 @@ export default function FarmWeather() {
 
   const S = {
     app:{ fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif", background:"#0a0f1a", color:"#e2e8f0", minHeight:"100vh", maxWidth:430, margin:"0 auto", paddingBottom:80 },
-    header:{ background:"linear-gradient(135deg,#0f172a 0%,#1e293b 100%)", borderBottom:"1px solid #1e3a5f", padding:"16px 20px 0", position:"sticky", top:0, zIndex:50 },
+    header:{ background:"linear-gradient(135deg,#0f172a 0%,#1e293b 100%)", borderBottom:"1px solid #1e3a5f", padding:"env(safe-area-inset-top, 16px) 20px 0", paddingTop:"max(env(safe-area-inset-top), 16px)", position:"sticky", top:0, zIndex:50 },
     headerTop:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 },
     logo:{ fontSize:13, fontWeight:700, letterSpacing:"0.15em", textTransform:"uppercase", color:"#38bdf8" },
     headerActions:{ display:"flex", gap:8, alignItems:"center" },
