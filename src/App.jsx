@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import GDDTab from "./GDDTab.jsx";
 
 const DEFAULT_FARMS = [
   { id: 1, name: "Wheeler",     lat: 47.145960, lon: -119.084559 },
@@ -257,6 +258,7 @@ export default function FarmWeather() {
   const [loading, setLoading]           = useState({});
   const [errors, setErrors]             = useState({});
   const [tab, setTab]                   = useState("now");
+  const [mainTab, setMainTab]           = useState("weather"); // "weather" | "gdd"
   const [showAddFarm, setShowAddFarm]   = useState(false);
   const [newFarm, setNewFarm]           = useState({ name:"", lat:"", lon:"" });
   const [editingId, setEditingId]       = useState(null);
@@ -328,7 +330,7 @@ export default function FarmWeather() {
   }
 
   const S = {
-    app:{ fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif", background:"#0a0f1a", color:"#e2e8f0", minHeight:"100vh", maxWidth:430, margin:"0 auto", paddingBottom:80 },
+    app:{ fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif", background:"#0a0f1a", color:"#e2e8f0", minHeight:"100vh", maxWidth:430, margin:"0 auto", paddingBottom:"calc(65px + env(safe-area-inset-bottom, 0px))" },
     header:{ background:"linear-gradient(135deg,#0f172a 0%,#1e293b 100%)", borderBottom:"1px solid #1e3a5f", padding:"env(safe-area-inset-top, 16px) 20px 0", paddingTop:"max(env(safe-area-inset-top), 16px)", position:"sticky", top:0, zIndex:50 },
     headerTop:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 },
     logo:{ fontSize:13, fontWeight:700, letterSpacing:"0.15em", textTransform:"uppercase", color:"#38bdf8" },
@@ -393,7 +395,9 @@ export default function FarmWeather() {
         </div>
       </div>
 
-      <div style={S.body}>
+      {mainTab === "gdd" && <GDDTab farms={farms} />}
+
+      {mainTab === "weather" && <div style={S.body}>
         {isLoading && (
           <div style={S.loadingBox}><div style={S.spinner} /><span style={{ fontSize:13 }}>Fetching weather...</span></div>
         )}
@@ -586,7 +590,7 @@ export default function FarmWeather() {
             )}
           </>
         )}
-      </div>
+      </div>}
 
       {/* Manage Farms Modal */}
       {showManageFarms && (() => {
@@ -662,6 +666,34 @@ export default function FarmWeather() {
       {showNotifPanel && (
         <NotificationPanel onClose={() => { setShowNotifPanel(false); getCurrentPushSub().then(s=>setNotifOn(!!s)); }}/>
       )}
+
+      {/* Bottom Nav */}
+      <div style={{
+        position:"fixed", bottom:0, left:0, right:0,
+        background:"#0a0f1a",
+        borderTop:"1px solid #1e3a5f",
+        display:"flex",
+        paddingBottom:"env(safe-area-inset-bottom, 0px)",
+        zIndex:60,
+      }}>
+        <div style={{ display:"flex", width:"100%", maxWidth:430, margin:"0 auto" }}>
+        {[
+          { id:"weather", label:"Weather", icon:"⛅" },
+          { id:"gdd",     label:"GDD",     icon:"🌡️" },
+        ].map(t => (
+          <button key={t.id} onClick={() => setMainTab(t.id)} style={{
+            flex:1, padding:"10px 0 8px", background:"transparent", border:"none", cursor:"pointer",
+            display:"flex", flexDirection:"column", alignItems:"center", gap:2,
+          }}>
+            <span style={{ fontSize:22 }}>{t.icon}</span>
+            <span style={{ fontSize:11, fontWeight: mainTab===t.id ? 700 : 500, color: mainTab===t.id ? "#38bdf8" : "#475569" }}>
+              {t.label}
+            </span>
+            {mainTab===t.id && <div style={{ width:20, height:2, borderRadius:1, background:"#38bdf8" }}/>}
+          </button>
+        ))}
+        </div>
+      </div>
     </div>
   );
 }
