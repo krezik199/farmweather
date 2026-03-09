@@ -1,0 +1,23 @@
+{
+  "name": "farmweather",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"vite\" \"node server/index.js\"",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "generate-vapid": "node -e \"const webpush=require('web-push'); const keys=webpush.generateVAPIDKeys(); console.log('VAPID_PUBLIC_KEY=' + keys.publicKey); console.log('VAPID_PRIVATE_KEY=' + keys.privateKey);\""
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "web-push": "^3.6.7",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "vite": "^5.0.0"
+  }
+}
