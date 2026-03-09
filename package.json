@@ -11,9 +11,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "web-push": "^3.6.7",
-    "node-cron": "^3.0.3"
-  },
-  "devDependencies": {
+    "node-cron": "^3.0.3",
     "@vitejs/plugin-react": "^4.2.1",
     "concurrently": "^8.2.2",
     "react": "^18.2.0",
@@ -21,3 +19,15 @@
     "vite": "^5.0.0"
   }
 }
+```
+
+**2. Then in your terminal, push the change:**
+```
+git add package.json
+git commit -m "Move all deps to dependencies"
+git push
+```
+
+Render will auto-deploy and this time it should install all 8 packages including vite. Also go back to Render **Settings** and set the Build Command back to just:
+```
+npm install && npm run build
