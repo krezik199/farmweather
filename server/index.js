@@ -162,6 +162,92 @@ app.post('/api/test-push', async (req, res) => {
   }
 });
 
+// ── Fields storage (shared across all users) ──
+const FIELDS_FILE = path.join(__dirname, 'fields.json');
+function loadFields() {
+  try { return JSON.parse(fs.readFileSync(FIELDS_FILE, 'utf8')); } catch { return []; }
+}
+function saveFields(fields) {
+  fs.writeFileSync(FIELDS_FILE, JSON.stringify(fields, null, 2));
+}
+
+// ── GDD fetch: historical daily temps from planting date to today ──
+async function fetchGDDData(lat, lon, plantingDate) {
+  const start = plantingDate; // 'YYYY-MM-DD'
+  const end = new Date().toISOString().split('T')[0];
+  const url =
+    `https://archive-api.open-meteo.com/v1/archive` +
+    `?latitude=${lat}&longitude=${lon}` +
+    `&daily=temperature_2m_max,temperature_2m_min` +
+    `&temperature_unit=fahrenheit` +
+    `&timezone=America%2FLos_Angeles` +
+    `&start_date=${start}&end_date=${end}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('GDD fetch failed');
+  return res.json();
+}
+
+// ── Fields API ──
+app.get('/api/fields', (req, res) => {
+  res.json(loadFields());
+});
+
+app.post('/api/fields', (req, res) => {
+  const { name, farmId, crop, plantingDate } = req.body;
+  if (!name || !farmId || !crop || !plantingDate) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  const fields = loadFields();
+  const field = { id: Date.now(), name, farmId, crop, plantingDate, createdAt: new Date().toISOString() };
+  fields.push(field);
+  saveFields(fields);
+  res.json(field);
+});
+
+app.put('/api/fields/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const fields = loadFields();
+  const idx = fields.findIndex(f => f.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Field not found' });
+  fields[idx] = { ...fields[idx], ...req.body, id };
+  saveFields(fields);
+  res.json(fields[idx]);
+});
+
+app.delete('/api/fields/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const fields = loadFields().filter(f => f.id !== id);
+  saveFields(fields);
+  res.json({ ok: true });
+});
+
+app.get('/api/fields/:id/gdd', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const fields = loadFields();
+  const field = fields.find(f => f.id === id);
+  if (!field) return res.status(404).json({ error: 'Field not found' });
+
+  // Find farm coords
+  const farm = FARMS.find(f => f.id === field.farmId);
+  if (!farm) return res.status(400).json({ error: 'Farm not found' });
+
+  try {
+    const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
+    const BASE = 45;
+    let cumulative = 0;
+    const daily = data.daily.time.map((date, i) => {
+      const tmax = Math.min(data.daily.temperature_2m_max[i], 86); // cap at 86°F
+      const tmin = Math.max(data.daily.temperature_2m_min[i], BASE);
+      const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
+      cumulative += gdd;
+      return { date, tmax: data.daily.temperature_2m_max[i], tmin: data.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
+    });
+    res.json({ field, farm: farm.name, daily, totalGDD: Math.round(cumulative * 10) / 10, daysTracked: daily.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
