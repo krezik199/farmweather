@@ -382,8 +382,7 @@ export default function GDDTab({ farms, apiFetch }) {
     if (!form.name.trim()) { setSaveError("Please enter a field name."); return; }
     if (!farmId)           { setSaveError("Please select a farm location."); return; }
     if (!form.plantingDate){ setSaveError("Please enter a planting date."); return; }
-    const today = new Date().toISOString().split('T')[0];
-    if (form.plantingDate > today){ setSaveError("Planting date cannot be in the future."); return; }
+
     setSaveError(null);
     setSaving(true);
     try {

@@ -65,7 +65,7 @@ function getDefaultFarmsForUser(username) {
   if (lower === 'admin' || lower === 'hyerfarms') {
     return HYER_FARMS.map(f => ({ ...f }));
   }
-  return [{ id: Date.now(), name: "Moses Lake", lat: 47.21337627564896, lon: -119.4912443529655 }];
+  return [{ id: 100, name: "Moses Lake", lat: 47.21337627564896, lon: -119.4912443529655 }];
 }
 
 // Seed default accounts on first run
@@ -480,8 +480,10 @@ async function fetchGDDData(lat, lon, plantingDate) {
   const end = new Date().toISOString().split('T')[0];
   const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=America%2FLos_Angeles&start_date=${plantingDate}&end_date=${end}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error('GDD fetch failed');
-  return res.json();
+  if (!res.ok) throw new Error(`GDD archive fetch failed (${res.status})`);
+  const data = await res.json();
+  if (!data.daily) throw new Error(`Archive API error: ${data.reason || JSON.stringify(data)}`);
+  return data;
 }
 
 (function migrateFields() {
@@ -502,8 +504,7 @@ app.get('/api/fields', requireAuth, (req, res) => {
 app.post('/api/fields', requireAuth, (req, res) => {
   const { name, farmId, crop, plantingDate } = req.body;
   if (!name || !farmId || !crop || !plantingDate) return res.status(400).json({ error: 'Missing required fields' });
-  const today = new Date().toISOString().split('T')[0];
-  if (plantingDate > today) return res.status(400).json({ error: 'Planting date cannot be in the future' });
+
   const fields = loadFields();
   const field = { id: Date.now(), userId: req.session.userId, name, farmId: parseInt(farmId), crop, variety: req.body.variety || '', plantingDate, createdAt: new Date().toISOString() };
   fields.push(field);
@@ -532,9 +533,15 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
   if (!field) return res.status(404).json({ error: 'Field not found' });
 
   // Look up farm from this user's farm list
+  // Try by id first, then fall back to matching by position (for fields saved with old static ids 1-7)
   const userFarms = getUserFarms(req.session.userId, req.session.username);
-  const farm = userFarms.find(f => f.id === parseInt(field.farmId));
-  if (!farm) return res.status(400).json({ error: `Farm not found — farmId: ${field.farmId}` });
+  let farm = userFarms.find(f => f.id === parseInt(field.farmId));
+  if (!farm) {
+    // Old static IDs were 1-7 in order; try matching by index position as fallback
+    const oldIdx = parseInt(field.farmId) - 1;
+    if (oldIdx >= 0 && oldIdx < userFarms.length) farm = userFarms[oldIdx];
+  }
+  if (!farm) return res.status(400).json({ error: `Farm not found — farmId: ${field.farmId}. Please re-save this field.` });
 
   try {
     const BASE = 45;
@@ -556,6 +563,7 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
 
     const fcastRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${farm.lat}&longitude=${farm.lon}&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=America%2FLos_Angeles&forecast_days=14`);
     const fcastData = await fcastRes.json();
+    if (!fcastData.daily) throw new Error(`Forecast API error: ${fcastData.reason || JSON.stringify(fcastData)}`);
     let forecastCumulative = totalGDD;
     const forecastDays = fcastData.daily.time.map((date, i) => {
       const tmax = Math.min(fcastData.daily.temperature_2m_max[i], 86);
