@@ -96,10 +96,13 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
   const planted = new Date(field.plantingDate + 'T12:00:00');
   const daysSincePlanting = Math.floor((new Date() - planted) / 86400000);
 
+  const isFuturePlanting = daysSincePlanting < 0;
+  const totalGDD = gddData?.totalGDD ?? 0;
+
   let currentStage = null, nextStage = null;
-  if (gddData && cropDef) {
+  if (gddData && cropDef && !isFuturePlanting) {
     for (let i = 0; i < cropDef.stages.length; i++) {
-      if (gddData.totalGDD < cropDef.stages[i].gdd) {
+      if (totalGDD < cropDef.stages[i].gdd) {
         nextStage = cropDef.stages[i];
         currentStage = i > 0 ? cropDef.stages[i-1] : null;
         break;
@@ -107,6 +110,9 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
         currentStage = cropDef.stages[i];
       }
     }
+  } else if (cropDef && isFuturePlanting) {
+    // Not planted yet — next stage is always the first one
+    nextStage = cropDef.stages[0];
   }
 
   return (
@@ -153,27 +159,41 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
           </div>
 
           {nextStage && (() => {
-            const proj = gddData.stageProjections?.find(s => s.name === nextStage.name);
+            const proj = gddData?.stageProjections?.find(s => s.name === nextStage.name);
             const projDate = proj?.date ? new Date(proj.date + 'T12:00:00') : null;
             const daysAway = proj?.daysAway;
             return (
               <div style={{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:10, padding:"10px 14px", marginBottom:12 }}>
-                <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>Current Stage</div>
-                <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>{currentStage ? currentStage.name : "Pre-emergence"}</div>
-                <div style={{ fontSize:12, color:"#38bdf8", marginTop:4 }}>
-                  Next: <strong>{nextStage.name}</strong>
-                </div>
-                {projDate && (
-                  <div style={{ fontSize:13, color:"#e2e8f0", marginTop:4 }}>
-                    📅 Est. {projDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
-                    {daysAway != null && (
-                      <span style={{ color:"#64748b", fontSize:12 }}> · {daysAway === 1 ? "tomorrow" : `in ${daysAway} days`}{proj.estimated ? " (est.)" : ""}</span>
+                {isFuturePlanting ? (
+                  <>
+                    <div style={{ fontSize:11, color:"#f59e0b", textTransform:"uppercase", letterSpacing:"0.08em" }}>Not Planted Yet</div>
+                    <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>
+                      Plants in {Math.abs(daysSincePlanting)} day{Math.abs(daysSincePlanting) !== 1 ? "s" : ""}
+                    </div>
+                    <div style={{ fontSize:12, color:"#475569", marginTop:2 }}>
+                      {planted.toLocaleDateString('en-US', {weekday:'short', month:'long', day:'numeric'})}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>Current Stage</div>
+                    <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>{currentStage ? currentStage.name : "Pre-emergence"}</div>
+                    <div style={{ fontSize:12, color:"#38bdf8", marginTop:4 }}>
+                      Next: <strong>{nextStage.name}</strong>
+                    </div>
+                    {projDate && (
+                      <div style={{ fontSize:13, color:"#e2e8f0", marginTop:4 }}>
+                        📅 Est. {projDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
+                        {daysAway != null && (
+                          <span style={{ color:"#64748b", fontSize:12 }}> · {daysAway === 1 ? "tomorrow" : `in ${daysAway} days`}{proj.estimated ? " (est.)" : ""}</span>
+                        )}
+                      </div>
                     )}
-                  </div>
+                    <div style={{ fontSize:11, color:"#475569", marginTop:2 }}>
+                      {Math.round(nextStage.gdd - totalGDD)} GDD remaining
+                    </div>
+                  </>
                 )}
-                <div style={{ fontSize:11, color:"#475569", marginTop:2 }}>
-                  {Math.round(nextStage.gdd - gddData.totalGDD)} GDD remaining
-                </div>
               </div>
             );
           })()}

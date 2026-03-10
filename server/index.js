@@ -252,17 +252,23 @@ app.get('/api/fields/:id/gdd', async (req, res) => {
     const BASE = 45;
     console.log(`[GDD] field="${field.name}" farm="${farm.name}" lat=${farm.lat} lon=${farm.lon} planted=${field.plantingDate}`);
 
-    // Historical GDD from planting date
-    const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
-    let cumulative = 0;
-    const daily = data.daily.time.map((date, i) => {
-      const tmax = Math.min(data.daily.temperature_2m_max[i], 86);
-      const tmin = Math.max(data.daily.temperature_2m_min[i], BASE);
-      const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
-      cumulative += gdd;
-      return { date, tmax: data.daily.temperature_2m_max[i], tmin: data.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
-    });
-    const totalGDD = Math.round(cumulative * 10) / 10;
+    // If planting date is in the future, skip historical fetch entirely
+    const today = new Date().toISOString().split('T')[0];
+    let daily = [];
+    let totalGDD = 0;
+
+    if (field.plantingDate <= today) {
+      const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
+      let cumulative = 0;
+      daily = data.daily.time.map((date, i) => {
+        const tmax = Math.min(data.daily.temperature_2m_max[i], 86);
+        const tmin = Math.max(data.daily.temperature_2m_min[i], BASE);
+        const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
+        cumulative += gdd;
+        return { date, tmax: data.daily.temperature_2m_max[i], tmin: data.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
+      });
+      totalGDD = Math.round(cumulative * 10) / 10;
+    } // end if plantingDate <= today
 
     // 14-day forecast GDD
     const fcastUrl =
