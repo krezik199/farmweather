@@ -2,15 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import GDDTab from "./GDDTab.jsx";
 import DataTab from "./DataTab.jsx";
 
-const DEFAULT_FARMS = [
-  { id: 1, name: "Wheeler",     lat: 47.145960, lon: -119.084559 },
-  { id: 2, name: "Meyer",       lat: 47.228213, lon: -119.087152 },
-  { id: 3, name: "Hirz",        lat: 47.263619, lon: -119.205851 },
-  { id: 4, name: "County Line", lat: 47.115975, lon: -118.981951 },
-  { id: 5, name: "Kulm",        lat: 46.995123, lon: -118.849620 },
-  { id: 6, name: "Lincoln",     lat: 47.309481, lon: -118.915966 },
-  { id: 7, name: "Wilbur",      lat: 47.634717, lon: -118.657076 },
-];
+
 
 const WMO_CODES = {
   0:"Clear",1:"Mainly Clear",2:"Partly Cloudy",3:"Overcast",
@@ -462,9 +454,7 @@ export default function FarmWeather() {
   const [currentUser, setCurrentUser] = useState(null);
 
   // ── App state ──
-  const [farms, setFarms] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("farms")) || DEFAULT_FARMS; } catch { return DEFAULT_FARMS; }
-  });
+  const [farms, setFarms] = useState([]);
   const [activeFarm, setActiveFarm]         = useState(0);
   const [weather, setWeather]               = useState({});
   const [loading, setLoading]               = useState({});
@@ -513,8 +503,19 @@ export default function FarmWeather() {
     }
   }, []);
 
-  useEffect(() => { if (authState === 'loggedIn') farms.forEach(f => loadWeather(f)); }, [authState]);
-  useEffect(() => { try { localStorage.setItem("farms", JSON.stringify(farms)); } catch {} }, [farms]);
+  // Load farms from server when logged in, then fetch weather for each
+  useEffect(() => {
+    if (authState !== 'loggedIn') return;
+    apiFetch('/api/farms')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setFarms(data);
+          data.forEach(f => loadWeather(f));
+        }
+      })
+      .catch(console.error);
+  }, [authState]);
 
   async function handleLogout() {
     try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch {}
@@ -559,19 +560,31 @@ export default function FarmWeather() {
     temp: hourly.temperature_2m[i], code: hourly.weather_code[i],
   })).filter(h => h.time >= now).slice(0,24) : [];
 
-  function addFarm() {
+  async function addFarm() {
     if (!newFarm.name || !newFarm.lat || !newFarm.lon) return;
-    const f = { id:Date.now(), name:newFarm.name, lat:parseFloat(newFarm.lat), lon:parseFloat(newFarm.lon) };
-    const updated = [...farms, f];
-    setFarms(updated);
+    const res = await apiFetch('/api/farms', {
+      method: 'POST',
+      body: JSON.stringify({ name: newFarm.name, lat: parseFloat(newFarm.lat), lon: parseFloat(newFarm.lon) }),
+    });
+    const f = await res.json();
+    setFarms(prev => [...prev, f]);
     setShowAddFarm(false);
     setNewFarm({ name:"", lat:"", lon:"" });
     loadWeather(f);
   }
-  function deleteFarm(id) {
-    const updated = farms.filter(f => f.id !== id);
-    setFarms(updated);
-    if (activeFarm >= updated.length) setActiveFarm(Math.max(0, updated.length-1));
+  async function deleteFarm(id) {
+    await apiFetch(`/api/farms/${id}`, { method: 'DELETE' });
+    setFarms(prev => {
+      const updated = prev.filter(f => f.id !== id);
+      if (activeFarm >= updated.length) setActiveFarm(Math.max(0, updated.length - 1));
+      return updated;
+    });
+  }
+  async function saveFarmEdit(farm) {
+    await apiFetch(`/api/farms/${farm.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: farm.name, lat: farm.lat, lon: farm.lon }),
+    });
   }
 
   const S = {
@@ -859,7 +872,7 @@ export default function FarmWeather() {
                     <input style={S.input} placeholder="Latitude" value={ef.lat} type="number" step="0.0001" onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lat:parseFloat(e.target.value)}:f))}/>
                     <input style={S.input} placeholder="Longitude" value={ef.lon} type="number" step="0.0001" onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lon:parseFloat(e.target.value)}:f))}/>
                     <div style={{ fontSize:11, color:"#475569", marginBottom:12 }}>Current: {ef.lat.toFixed(6)}, {ef.lon.toFixed(6)}</div>
-                    <button style={S.btn("primary")} onClick={()=>{ loadWeather(ef); setEditingId(null); }}>Save & Refresh</button>
+                    <button style={S.btn("primary")} onClick={()=>{ saveFarmEdit(ef); loadWeather(ef); setEditingId(null); }}>Save & Refresh</button>
                     <button style={S.btn("secondary")} onClick={()=>setEditingId(null)}>← Back</button>
                   </>
                 );
