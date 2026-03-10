@@ -152,15 +152,31 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
             </div>
           </div>
 
-          {nextStage && (
-            <div style={{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:10, padding:"10px 14px", marginBottom:12 }}>
-              <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>Current Stage</div>
-              <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>{currentStage ? currentStage.name : "Pre-emergence"}</div>
-              <div style={{ fontSize:12, color:"#38bdf8", marginTop:2 }}>
-                {Math.round(nextStage.gdd - gddData.totalGDD)} GDD until {nextStage.name}
+          {nextStage && (() => {
+            const proj = gddData.stageProjections?.find(s => s.name === nextStage.name);
+            const projDate = proj?.date ? new Date(proj.date + 'T12:00:00') : null;
+            const daysAway = proj?.daysAway;
+            return (
+              <div style={{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:10, padding:"10px 14px", marginBottom:12 }}>
+                <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>Current Stage</div>
+                <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>{currentStage ? currentStage.name : "Pre-emergence"}</div>
+                <div style={{ fontSize:12, color:"#38bdf8", marginTop:4 }}>
+                  Next: <strong>{nextStage.name}</strong>
+                </div>
+                {projDate && (
+                  <div style={{ fontSize:13, color:"#e2e8f0", marginTop:4 }}>
+                    📅 Est. {projDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
+                    {daysAway != null && (
+                      <span style={{ color:"#64748b", fontSize:12 }}> · {daysAway === 1 ? "tomorrow" : `in ${daysAway} days`}{proj.estimated ? " (est.)" : ""}</span>
+                    )}
+                  </div>
+                )}
+                <div style={{ fontSize:11, color:"#475569", marginTop:2 }}>
+                  {Math.round(nextStage.gdd - gddData.totalGDD)} GDD remaining
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {!nextStage && (
             <div style={{ background:"#14532d", border:"1px solid #22c55e", borderRadius:10, padding:"10px 14px", marginBottom:12 }}>
               <div style={{ fontSize:14, fontWeight:700, color:"#22c55e" }}>✅ Maturity Reached</div>
@@ -174,6 +190,46 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
 
           {expanded && (
             <>
+              {/* Stage projections table */}
+              {gddData.stageProjections && (
+                <div style={{ marginBottom:14 }}>
+                  <div style={S.sectionTitle}>Stage Forecast</div>
+                  {gddData.stageProjections.map(stage => {
+                    const d = stage.date ? new Date(stage.date + 'T12:00:00') : null;
+                    return (
+                      <div key={stage.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid #1e293b" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <span style={{ fontSize:14 }}>{stage.reached ? "✅" : "📅"}</span>
+                          <div>
+                            <div style={{ fontSize:13, fontWeight: stage.reached ? 500 : 600, color: stage.reached ? "#475569" : "#f0f9ff" }}>{stage.name}</div>
+                            <div style={{ fontSize:11, color:"#334155" }}>{stage.gdd} GDD</div>
+                          </div>
+                        </div>
+                        <div style={{ textAlign:"right" }}>
+                          {stage.reached ? (
+                            <div style={{ fontSize:12, color:"#22c55e" }}>
+                              {d ? d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) : "Reached"}
+                            </div>
+                          ) : d ? (
+                            <>
+                              <div style={{ fontSize:13, fontWeight:600, color:"#38bdf8" }}>
+                                {d.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
+                              </div>
+                              <div style={{ fontSize:11, color:"#475569" }}>
+                                {stage.daysAway === 1 ? "tomorrow" : stage.daysAway != null ? `in ${stage.daysAway} days` : ""}
+                                {stage.estimated ? " (projected)" : ""}
+                              </div>
+                            </>
+                          ) : (
+                            <div style={{ fontSize:12, color:"#334155" }}>—</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <StageProgress crop={field.crop} totalGDD={gddData.totalGDD} />
               <div style={{ marginTop:14 }}>
                 <div style={S.sectionTitle}>Last 7 Days</div>

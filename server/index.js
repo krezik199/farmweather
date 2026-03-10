@@ -227,22 +227,85 @@ app.get('/api/fields/:id/gdd', async (req, res) => {
   const field = fields.find(f => f.id === id);
   if (!field) return res.status(404).json({ error: 'Field not found' });
 
-  // Find farm coords
   const farm = FARMS.find(f => f.id === field.farmId);
   if (!farm) return res.status(400).json({ error: 'Farm not found' });
 
   try {
-    const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
     const BASE = 45;
+
+    // Historical GDD from planting date
+    const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
     let cumulative = 0;
     const daily = data.daily.time.map((date, i) => {
-      const tmax = Math.min(data.daily.temperature_2m_max[i], 86); // cap at 86°F
+      const tmax = Math.min(data.daily.temperature_2m_max[i], 86);
       const tmin = Math.max(data.daily.temperature_2m_min[i], BASE);
       const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
       cumulative += gdd;
       return { date, tmax: data.daily.temperature_2m_max[i], tmin: data.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
     });
-    res.json({ field, farm: farm.name, daily, totalGDD: Math.round(cumulative * 10) / 10, daysTracked: daily.length });
+    const totalGDD = Math.round(cumulative * 10) / 10;
+
+    // 14-day forecast GDD
+    const fcastUrl =
+      `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${farm.lat}&longitude=${farm.lon}` +
+      `&daily=temperature_2m_max,temperature_2m_min` +
+      `&temperature_unit=fahrenheit` +
+      `&timezone=America%2FLos_Angeles` +
+      `&forecast_days=14`;
+    const fcastRes = await fetch(fcastUrl);
+    const fcastData = await fcastRes.json();
+
+    let forecastCumulative = totalGDD;
+    const forecastDays = fcastData.daily.time.map((date, i) => {
+      const tmax = Math.min(fcastData.daily.temperature_2m_max[i], 86);
+      const tmin = Math.max(fcastData.daily.temperature_2m_min[i], BASE);
+      const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
+      forecastCumulative += gdd;
+      return { date, tmax: fcastData.daily.temperature_2m_max[i], tmin: fcastData.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, projected: Math.round(forecastCumulative * 10) / 10 };
+    });
+
+    // Stage projections
+    const CROP_STAGES = {
+      onion:  [
+        { name: "Emergence",       gdd: 100  },
+        { name: "3-Leaf Stage",    gdd: 400  },
+        { name: "Bulb Initiation", gdd: 800  },
+        { name: "Bulb Fill",       gdd: 1400 },
+        { name: "Maturity",        gdd: 2000 },
+      ],
+      potato: [
+        { name: "Emergence",        gdd: 100  },
+        { name: "Tuber Initiation", gdd: 350  },
+        { name: "Tuber Bulking",    gdd: 700  },
+        { name: "Maturity",         gdd: 1200 },
+      ],
+    };
+    const stages = CROP_STAGES[field.crop] || [];
+    const stageProjections = stages.map(stage => {
+      if (totalGDD >= stage.gdd) {
+        const reachedDay = daily.find(d => d.cumulative >= stage.gdd);
+        return { name: stage.name, gdd: stage.gdd, reached: true, date: reachedDay ? reachedDay.date : null };
+      }
+      const forecastDay = forecastDays.find(d => d.projected >= stage.gdd);
+      if (forecastDay) {
+        const daysAway = forecastDays.indexOf(forecastDay) + 1;
+        return { name: stage.name, gdd: stage.gdd, reached: false, date: forecastDay.date, daysAway };
+      }
+      // Beyond 14-day window - extrapolate from avg of last 7 forecast days
+      const last7 = forecastDays.slice(-7);
+      const avgGDDperDay = last7.reduce((sum, d) => sum + d.gdd, 0) / last7.length;
+      const gddNeeded = stage.gdd - forecastCumulative;
+      if (avgGDDperDay > 0) {
+        const extraDays = Math.ceil(gddNeeded / avgGDDperDay);
+        const lastDate = new Date(forecastDays[forecastDays.length - 1].date + 'T12:00:00');
+        lastDate.setDate(lastDate.getDate() + extraDays);
+        return { name: stage.name, gdd: stage.gdd, reached: false, date: lastDate.toISOString().split('T')[0], daysAway: forecastDays.length + extraDays, estimated: true };
+      }
+      return { name: stage.name, gdd: stage.gdd, reached: false, date: null, daysAway: null };
+    });
+
+    res.json({ field, farm: farm.name, daily, totalGDD, daysTracked: daily.length, forecastDays, stageProjections });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
