@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import GDDTab from "./GDDTab.jsx";
+import DataTab from "./DataTab.jsx";
 
 const DEFAULT_FARMS = [
   { id: 1, name: "Wheeler",     lat: 47.145960, lon: -119.084559 },
@@ -396,6 +397,7 @@ export default function FarmWeather() {
       </div>
 
       {mainTab === "gdd" && <GDDTab farms={farms} />}
+      {mainTab === "data" && <DataTab farms={farms} />}
 
       {mainTab === "weather" && <div style={S.body}>
         {isLoading && (
@@ -680,6 +682,7 @@ export default function FarmWeather() {
         {[
           { id:"weather", label:"Weather", icon:"⛅" },
           { id:"gdd",     label:"GDD",     icon:"🌡️" },
+          { id:"data",    label:"Data",    icon:"📋" },
         ].map(t => (
           <button key={t.id} onClick={() => setMainTab(t.id)} style={{
             flex:1, padding:"10px 0 8px", background:"transparent", border:"none", cursor:"pointer",

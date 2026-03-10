@@ -336,6 +336,46 @@ app.get('/api/fields/:id/gdd', async (req, res) => {
   }
 });
 
+
+// ── Observations storage ──
+const OBS_FILE = path.join(__dirname, 'observations.json');
+function loadObs() {
+  try { return JSON.parse(fs.readFileSync(OBS_FILE, 'utf8')); } catch { return []; }
+}
+function saveObs(obs) {
+  fs.writeFileSync(OBS_FILE, JSON.stringify(obs, null, 2));
+}
+
+app.get('/api/observations', (req, res) => {
+  res.json(loadObs());
+});
+
+app.post('/api/observations', (req, res) => {
+  const { fieldId, stage, date, notes, gddAtObservation } = req.body;
+  if (!fieldId || !stage || !date) return res.status(400).json({ error: 'Missing required fields' });
+  const obs = loadObs();
+  // Remove any existing observation for this field+stage (replace with new one)
+  const filtered = obs.filter(o => !(o.fieldId === parseInt(fieldId) && o.stage === stage));
+  const newObs = {
+    id: Date.now(),
+    fieldId: parseInt(fieldId),
+    stage,
+    date,
+    notes: notes || '',
+    gddAtObservation: gddAtObservation ?? null,
+    createdAt: new Date().toISOString(),
+  };
+  filtered.push(newObs);
+  saveObs(filtered);
+  res.json(newObs);
+});
+
+app.delete('/api/observations/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  saveObs(loadObs().filter(o => o.id !== id));
+  res.json({ ok: true });
+});
+
 // Serve React app for all other routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
