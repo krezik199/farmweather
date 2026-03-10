@@ -88,12 +88,17 @@ function alertWindowKey(farmId, type, date) {
 }
 
 function dayLabel(dateStr) {
-  const today = new Date().toDateString();
-  const tomorrow = new Date(Date.now() + 86400000).toDateString();
-  const d = new Date(dateStr + 'T12:00:00');
-  if (d.toDateString() === today) return 'today';
-  if (d.toDateString() === tomorrow) return 'tomorrow';
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  // Always compare dates in Pacific time to match the farm locations
+  const nowPacific = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit' });
+  const [m, d, y] = nowPacific.split('/');
+  const todayPacific = `${y}-${m}-${d}`;
+  const tomorrowDate = new Date(`${todayPacific}T12:00:00-08:00`);
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowPacific = tomorrowDate.toISOString().split('T')[0];
+
+  if (dateStr === todayPacific) return 'today';
+  if (dateStr === tomorrowPacific) return 'tomorrow';
+  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
 // ── Core check logic — one summary push per day across all farms ──
