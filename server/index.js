@@ -535,7 +535,7 @@ app.delete('/api/fields/:id', requireAuth, (req, res) => {
 // ═══════════════════════════════════════════════
 
 const gddCache = new Map(); // key: `${fieldId}` -> { data, cachedAt }
-const GDD_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours
+const GDD_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
 function getGDDCache(fieldId) {
   const entry = gddCache.get(String(fieldId));
