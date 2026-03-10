@@ -6,27 +6,54 @@ const CROPS = {
   onion: {
     label: "Onions",
     emoji: "🧅",
-    varieties: ["Legend", "Red Carpet", "Cometa"],
+    varieties: {
+      "Legend":     { dtm: 120 },
+      "Red Carpet": { dtm: 118 },
+      "Cometa":     { dtm: 120 },
+    },
     stages: [
-      { name: "Emergence",       gdd: 100  },
-      { name: "3-Leaf Stage",    gdd: 400  },
-      { name: "Bulb Initiation", gdd: 800  },
-      { name: "Bulb Fill",       gdd: 1400 },
-      { name: "Maturity",        gdd: 2000 },
+      { name: "Emergence",       gdd: 100,  pct: 0.05 },
+      { name: "3-Leaf Stage",    gdd: 400,  pct: 0.20 },
+      { name: "Bulb Initiation", gdd: 800,  pct: 0.40 },
+      { name: "Bulb Fill",       gdd: 1400, pct: 0.70 },
+      { name: "Maturity",        gdd: 2000, pct: 1.00 },
     ],
   },
   potato: {
     label: "Potatoes",
     emoji: "🥔",
-    varieties: ["Norkotah", "Little Star", "Rising Star", "Ruby Red", "Primabelle", "Agata", "Purple Majesty"],
+    varieties: {
+      "Norkotah":      { dtm: null },
+      "Little Star":   { dtm: null },
+      "Rising Star":   { dtm: null },
+      "Ruby Red":      { dtm: null },
+      "Primabelle":    { dtm: null },
+      "Agata":         { dtm: null },
+      "Purple Majesty":{ dtm: null },
+    },
     stages: [
-      { name: "Emergence",        gdd: 100  },
-      { name: "Tuber Initiation", gdd: 350  },
-      { name: "Tuber Bulking",    gdd: 700  },
-      { name: "Maturity",         gdd: 1200 },
+      { name: "Emergence",        gdd: 100,  pct: 0.08 },
+      { name: "Tuber Initiation", gdd: 350,  pct: 0.30 },
+      { name: "Tuber Bulking",    gdd: 700,  pct: 0.60 },
+      { name: "Maturity",         gdd: 1200, pct: 1.00 },
     ],
   },
 };
+
+// Get variety list for dropdowns
+function getVarieties(crop) {
+  return Object.keys(CROPS[crop]?.varieties || {});
+}
+
+// Get DTM for a specific variety (null if unknown)
+function getVarietyDTM(crop, variety) {
+  return CROPS[crop]?.varieties?.[variety]?.dtm ?? null;
+}
+
+// Given a stage's pct of maturity and DTM, compute days from planting to that stage
+function dtmDaysToStage(dtm, pct) {
+  return Math.round(dtm * pct);
+}
 
 const S = {
   card:{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:16, padding:18, marginTop:14 },
@@ -98,6 +125,43 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
 
   const isFuturePlanting = daysSincePlanting < 0;
   const totalGDD = gddData?.totalGDD ?? 0;
+  const dtm = getVarietyDTM(field.crop, field.variety);
+
+  // Blend GDD-based and DTM-based stage date estimates
+  function blendedStageDate(stage) {
+    const gddProj = gddData?.stageProjections?.find(s => s.name === stage.name);
+    if (gddProj?.reached) return { date: gddProj.date, label: null, source: "actual" };
+
+    const gddDate = gddProj?.date ? new Date(gddProj.date + 'T12:00:00') : null;
+    const gddDaysAway = gddProj?.daysAway ?? null;
+    const gddEstimated = gddProj?.estimated ?? false;
+
+    if (!dtm || !stage.pct) return { date: gddProj?.date ?? null, daysAway: gddDaysAway, estimated: gddEstimated, source: "gdd" };
+
+    // DTM-based date: planting date + (dtm * stage percentage)
+    const dtmDays = dtmDaysToStage(dtm, stage.pct);
+    const dtmDate = new Date(planted);
+    dtmDate.setDate(dtmDate.getDate() + dtmDays);
+    const dtmDaysAway = Math.round((dtmDate - new Date()) / 86400000);
+
+    if (!gddDate) {
+      // Only DTM available
+      return { date: dtmDate.toISOString().split('T')[0], daysAway: dtmDaysAway, source: "dtm" };
+    }
+
+    // Average the two estimates
+    const avgMs = (gddDate.getTime() + dtmDate.getTime()) / 2;
+    const avgDate = new Date(avgMs);
+    const avgDaysAway = Math.round((avgDate - new Date()) / 86400000);
+    return {
+      date: avgDate.toISOString().split('T')[0],
+      daysAway: avgDaysAway,
+      gddDate: gddDate.toISOString().split('T')[0],
+      dtmDate: dtmDate.toISOString().split('T')[0],
+      estimated: gddEstimated,
+      source: "blended",
+    };
+  }
 
   let currentStage = null, nextStage = null;
   if (gddData && cropDef && !isFuturePlanting) {
@@ -159,9 +223,8 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
           </div>
 
           {nextStage && (() => {
-            const proj = gddData?.stageProjections?.find(s => s.name === nextStage.name);
-            const projDate = proj?.date ? new Date(proj.date + 'T12:00:00') : null;
-            const daysAway = proj?.daysAway;
+            const blend = blendedStageDate(nextStage);
+            const blendDate = blend?.date ? new Date(blend.date + 'T12:00:00') : null;
             return (
               <div style={{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:10, padding:"10px 14px", marginBottom:12 }}>
                 {isFuturePlanting ? (
@@ -178,15 +241,16 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
                   <>
                     <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>Current Stage</div>
                     <div style={{ fontSize:14, fontWeight:700, color:"#f0f9ff", marginTop:2 }}>{currentStage ? currentStage.name : "Pre-emergence"}</div>
-                    <div style={{ fontSize:12, color:"#38bdf8", marginTop:4 }}>
-                      Next: <strong>{nextStage.name}</strong>
-                    </div>
-                    {projDate && (
+                    <div style={{ fontSize:12, color:"#38bdf8", marginTop:4 }}>Next: <strong>{nextStage.name}</strong></div>
+                    {blendDate && (
                       <div style={{ fontSize:13, color:"#e2e8f0", marginTop:4 }}>
-                        📅 Est. {projDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
-                        {daysAway != null && (
-                          <span style={{ color:"#64748b", fontSize:12 }}> · {daysAway === 1 ? "tomorrow" : `in ${daysAway} days`}{proj.estimated ? " (est.)" : ""}</span>
+                        📅 Est. {blendDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
+                        {blend.daysAway != null && (
+                          <span style={{ color:"#64748b", fontSize:12 }}>
+                            {" · "}{blend.daysAway <= 0 ? "any day now" : blend.daysAway === 1 ? "tomorrow" : `in ${blend.daysAway} days`}
+                          </span>
                         )}
+                        {blend.source === "blended" && <span style={{ color:"#334155", fontSize:11 }}> · GDD + DTM avg</span>}
                       </div>
                     )}
                     <div style={{ fontSize:11, color:"#475569", marginTop:2 }}>
@@ -211,22 +275,27 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
           {expanded && (
             <>
               {/* Stage projections table */}
-              {gddData.stageProjections && (
+              {cropDef && (
                 <div style={{ marginBottom:14 }}>
-                  <div style={S.sectionTitle}>Stage Forecast</div>
-                  {gddData.stageProjections.map(stage => {
-                    const d = stage.date ? new Date(stage.date + 'T12:00:00') : null;
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+                    <div style={S.sectionTitle}>Stage Forecast</div>
+                    {dtm && <div style={{ fontSize:10, color:"#334155" }}>GDD + {field.variety} DTM blended</div>}
+                  </div>
+                  {cropDef.stages.map(stage => {
+                    const blend = blendedStageDate(stage);
+                    const d = blend?.date ? new Date(blend.date + 'T12:00:00') : null;
+                    const isReached = blend?.source === "actual";
                     return (
-                      <div key={stage.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid #1e293b" }}>
+                      <div key={stage.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom:"1px solid #1e293b" }}>
                         <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                          <span style={{ fontSize:14 }}>{stage.reached ? "✅" : "📅"}</span>
+                          <span style={{ fontSize:14 }}>{isReached ? "✅" : "📅"}</span>
                           <div>
-                            <div style={{ fontSize:13, fontWeight: stage.reached ? 500 : 600, color: stage.reached ? "#475569" : "#f0f9ff" }}>{stage.name}</div>
+                            <div style={{ fontSize:13, fontWeight: isReached ? 500 : 600, color: isReached ? "#475569" : "#f0f9ff" }}>{stage.name}</div>
                             <div style={{ fontSize:11, color:"#334155" }}>{stage.gdd} GDD</div>
                           </div>
                         </div>
                         <div style={{ textAlign:"right" }}>
-                          {stage.reached ? (
+                          {isReached ? (
                             <div style={{ fontSize:12, color:"#22c55e" }}>
                               {d ? d.toLocaleDateString('en-US', {month:'short', day:'numeric'}) : "Reached"}
                             </div>
@@ -236,8 +305,10 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
                                 {d.toLocaleDateString('en-US', {month:'short', day:'numeric'})}
                               </div>
                               <div style={{ fontSize:11, color:"#475569" }}>
-                                {stage.daysAway === 1 ? "tomorrow" : stage.daysAway != null ? `in ${stage.daysAway} days` : ""}
-                                {stage.estimated ? " (projected)" : ""}
+                                {blend.daysAway <= 0 ? "any day now" : blend.daysAway === 1 ? "tomorrow" : blend.daysAway != null ? `in ${blend.daysAway} days` : ""}
+                                {blend.source === "blended" && blend.gddDate !== blend.dtmDate && (
+                                  <span style={{ color:"#1e3a5f" }}> · avg</span>
+                                )}
                               </div>
                             </>
                           ) : (
@@ -290,14 +361,14 @@ export default function GDDTab({ farms }) {
 
   function openAdd() {
     setSaveError(null);
-    setForm({ name:"", farmId: farms[0]?.id ?? "", crop:"onion", variety: CROPS.onion.varieties[0], plantingDate:"" });
+    setForm({ name:"", farmId: farms[0]?.id ?? "", crop:"onion", variety: getVarieties("onion")[0], plantingDate:"" });
     setEditingField(null);
     setShowAdd(true);
   }
 
   function openEdit(field) {
     setSaveError(null);
-    setForm({ name: field.name, farmId: field.farmId, crop: field.crop, variety: field.variety || "", plantingDate: field.plantingDate });
+    setForm({ name: field.name, farmId: field.farmId, crop: field.crop, variety: field.variety || getVarieties(field.crop)[0] || "", plantingDate: field.plantingDate });
     setEditingField(field);
     setShowAdd(true);
   }
@@ -406,7 +477,7 @@ export default function GDDTab({ farms }) {
             <div style={{ fontSize:12, color:"#94a3b8", marginBottom:4 }}>Crop Type</div>
             <div style={{ position:"relative", marginBottom:10 }}>
               <select style={S.select} value={form.crop}
-                onChange={e => setForm(f => ({...f, crop: e.target.value, variety: CROPS[e.target.value]?.varieties[0] || ""}))}>
+                onChange={e => setForm(f => ({...f, crop: e.target.value, variety: getVarieties(e.target.value)[0] || ""}))}>
                 {Object.entries(CROPS).map(([key, val]) => (
                   <option key={key} value={key}>{val.emoji} {val.label}</option>
                 ))}
@@ -418,9 +489,10 @@ export default function GDDTab({ farms }) {
             <div style={{ position:"relative", marginBottom:10 }}>
               <select style={S.select} value={form.variety}
                 onChange={e => setForm(f => ({...f, variety: e.target.value}))}>
-                {(CROPS[form.crop]?.varieties || []).map(v => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
+                {getVarieties(form.crop).map(v => {
+                  const dtm = getVarietyDTM(form.crop, v);
+                  return <option key={v} value={v}>{v}{dtm ? ` (${dtm} days)` : ""}</option>;
+                })}
               </select>
               {arrowSpan}
             </div>

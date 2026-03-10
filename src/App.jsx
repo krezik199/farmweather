@@ -121,9 +121,11 @@ function WindArrow({ deg, size = 20 }) {
 
 // ── Notification Settings Panel ──
 function NotificationPanel({ onClose }) {
-  const [status, setStatus]   = useState('checking'); // checking | unsupported | denied | subscribed | unsubscribed
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg]         = useState('');
+  const [status, setStatus]     = useState('checking');
+  const [loading, setLoading]   = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [msg, setMsg]           = useState('');
+  const [alertResults, setAlertResults] = useState(null); // null | []
 
   useEffect(() => {
     (async () => {
@@ -142,9 +144,7 @@ function NotificationPanel({ onClose }) {
       await subscribeToPush();
       setStatus('subscribed');
       setMsg('✅ Alerts enabled on this device!');
-    } catch (e) {
-      setMsg('❌ Error: ' + e.message);
-    }
+    } catch (e) { setMsg('❌ Error: ' + e.message); }
     setLoading(false);
   }
 
@@ -157,7 +157,7 @@ function NotificationPanel({ onClose }) {
   }
 
   async function sendTest() {
-    setLoading(true); setMsg('');
+    setLoading(true); setMsg(''); setAlertResults(null);
     try {
       const res = await fetch('/api/test-push', { method: 'POST' });
       if (res.ok) setMsg('📲 Test notification sent!');
@@ -166,32 +166,47 @@ function NotificationPanel({ onClose }) {
     setLoading(false);
   }
 
+  async function checkNow() {
+    setChecking(true); setMsg(''); setAlertResults(null);
+    try {
+      const res = await fetch('/api/check-alerts', { method: 'POST' });
+      const data = await res.json();
+      setAlertResults(data.alerts || []);
+      if (data.alerts.length === 0) setMsg('');
+    } catch { setMsg('❌ Error checking alerts.'); }
+    setChecking(false);
+  }
+
   const s = {
     overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', zIndex:200, display:'flex', alignItems:'flex-end' },
-    box: { background:'#0f1f35', border:'1px solid #1e3a5f', borderRadius:'20px 20px 0 0', padding:24, width:'100%', maxWidth:430, margin:'0 auto' },
+    box: { background:'#0f1f35', border:'1px solid #1e3a5f', borderRadius:'20px 20px 0 0', padding:24, width:'100%', maxWidth:430, margin:'0 auto', maxHeight:'88vh', overflowY:'auto' },
     title: { fontSize:17, fontWeight:700, marginBottom:4, color:'#f0f9ff' },
-    sub: { fontSize:13, color:'#64748b', marginBottom:20 },
-    row: { background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'14px 16px', marginBottom:10 },
-    rowTitle: { fontSize:14, fontWeight:700, color:'#e2e8f0', marginBottom:4 },
+    sub: { fontSize:13, color:'#64748b', marginBottom:16 },
+    row: { background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'12px 14px', marginBottom:8 },
+    rowTitle: { fontSize:13, fontWeight:700, color:'#e2e8f0', marginBottom:3 },
     rowDesc: { fontSize:12, color:'#64748b' },
     badge: (on) => ({ display:'inline-block', padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:700,
-      background: on ? '#14532d' : '#1e293b', color: on ? '#22c55e' : '#475569', marginBottom:8 }),
+      background: on ? '#14532d' : '#1e293b', color: on ? '#22c55e' : '#475569', marginBottom:10 }),
     btn: (v) => ({ width:'100%', padding:13, borderRadius:12, fontSize:15, fontWeight:700, cursor:'pointer',
-      border:'none', marginBottom:8, background: v==='primary'?'#38bdf8': v==='danger'?'#7f1d1d':'#1e293b',
-      color: v==='primary'?'#0a0f1a': v==='danger'?'#f87171':'#94a3b8' }),
+      border:'none', marginBottom:8, background: v==='primary'?'#38bdf8': v==='danger'?'#7f1d1d': v==='green'?'#15803d':'#1e293b',
+      color: v==='primary'?'#0a0f1a': v==='danger'?'#f87171': v==='green'?'#f0fdf4':'#94a3b8' }),
     msg: { fontSize:13, color:'#94a3b8', textAlign:'center', marginBottom:8, minHeight:20 },
   };
+
+  const ALERT_ICONS = { frost:'❄️', rain:'🌧️', wind:'💨', heat:'🌡️' };
 
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.box} onClick={e => e.stopPropagation()}>
         <div style={s.title}>🔔 Push Notifications</div>
-        <div style={s.sub}>Alerts sent directly to this device, even when the app is closed.</div>
+        <div style={s.sub}>Alerts sent to this device at 6am, noon, and 6pm for the next 3 days.</div>
 
         {/* Alert types */}
         {[
-          { emoji:'❄️', title:'Frost & Freeze Warnings', desc:'Alerts at 36°F (frost possible), 32°F (freeze), and 28°F (hard freeze) thresholds' },
-          { emoji:'🌧️', title:'Rain in Next 6 Hours',    desc:'Alert when 50%+ chance of rain is forecast within 6 hours at any farm location' },
+          { emoji:'❄️', title:'Frost & Freeze',  desc:'36°F frost possible · 32°F freeze · 28°F hard freeze — up to 3 days ahead' },
+          { emoji:'🌧️', title:'Rain',             desc:'50%+ chance or 0.1"+ forecast — up to 3 days ahead' },
+          { emoji:'💨', title:'High Wind',        desc:'Sustained winds ≥20 mph — spray condition risk' },
+          { emoji:'🌡️', title:'Heat',             desc:'High temperatures ≥95°F forecast' },
         ].map(a => (
           <div key={a.title} style={s.row}>
             <div style={s.rowTitle}>{a.emoji} {a.title}</div>
@@ -199,20 +214,10 @@ function NotificationPanel({ onClose }) {
           </div>
         ))}
 
-        {/* Status & controls */}
+        {/* Status */}
         {status === 'checking' && <div style={s.msg}>Checking notification status...</div>}
-
-        {status === 'unsupported' && (
-          <div style={{ ...s.msg, color:'#f87171' }}>
-            ⚠️ Push notifications require iOS 16.4+ and the app must be added to your Home Screen via Safari's share menu.
-          </div>
-        )}
-
-        {status === 'denied' && (
-          <div style={{ ...s.msg, color:'#f87171' }}>
-            Notifications are blocked. Go to Settings → Safari → [this site] → Notifications to allow them.
-          </div>
-        )}
+        {status === 'unsupported' && <div style={{ ...s.msg, color:'#f87171' }}>⚠️ Push requires iOS 16.4+ and app added to Home Screen via Safari.</div>}
+        {status === 'denied' && <div style={{ ...s.msg, color:'#f87171' }}>Notifications blocked. Go to Settings → Safari → Notifications to allow.</div>}
 
         {(status === 'subscribed' || status === 'unsubscribed') && (
           <>
@@ -221,6 +226,28 @@ function NotificationPanel({ onClose }) {
             </div>
             {msg && <div style={s.msg}>{msg}</div>}
 
+            {/* Manual check results */}
+            {alertResults !== null && (
+              <div style={{ background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'12px 14px', marginBottom:10 }}>
+                {alertResults.length === 0 ? (
+                  <div style={{ fontSize:13, color:'#22c55e', textAlign:'center' }}>
+                    ✅ No weather alerts in the next 3 days
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize:12, fontWeight:700, color:'#f59e0b', marginBottom:8 }}>
+                      {alertResults.length} alert{alertResults.length !== 1 ? 's' : ''} sent
+                    </div>
+                    {alertResults.map((a, i) => (
+                      <div key={i} style={{ fontSize:12, color:'#e2e8f0', padding:'4px 0', borderBottom: i < alertResults.length-1 ? '1px solid #1e293b' : 'none' }}>
+                        {ALERT_ICONS[a.type] || '⚠️'} <strong>{a.farm}</strong> · {a.label} · {a.msg.split(' at ')[0]}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+
             {status === 'unsubscribed' && (
               <button style={s.btn('primary')} onClick={enable} disabled={loading}>
                 {loading ? 'Enabling...' : 'Enable Alerts on This Device'}
@@ -228,7 +255,10 @@ function NotificationPanel({ onClose }) {
             )}
             {status === 'subscribed' && (
               <>
-                <button style={s.btn('secondary')} onClick={sendTest} disabled={loading}>
+                <button style={s.btn('green')} onClick={checkNow} disabled={checking || loading}>
+                  {checking ? 'Checking...' : '🔍 Check for Alerts Now'}
+                </button>
+                <button style={s.btn('secondary')} onClick={sendTest} disabled={loading || checking}>
                   {loading ? 'Sending...' : '📲 Send Test Notification'}
                 </button>
                 <button style={s.btn('danger')} onClick={disable} disabled={loading}>
@@ -240,9 +270,8 @@ function NotificationPanel({ onClose }) {
         )}
 
         <button style={s.btn('secondary')} onClick={onClose}>Close</button>
-
         <div style={{ fontSize:11, color:'#334155', textAlign:'center', marginTop:4 }}>
-          Checks weather every 30 minutes · Each device subscribes independently
+          Scheduled at 6am · 12pm · 6pm Pacific · Each device subscribes independently
         </div>
       </div>
     </div>

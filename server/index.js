@@ -41,19 +41,21 @@ const FROST_THRESHOLDS = [
   { temp: 32, label: "FREEZE WARNING",       emoji: "❄️" },
   { temp: 36, label: "FROST POSSIBLE",       emoji: "🌡️" },
 ];
-const RAIN_LOOKAHEAD_HOURS = 6;
-const RAIN_PROB_THRESHOLD  = 50;  // % chance to trigger
-const RAIN_AMT_THRESHOLD   = 0.05; // inches
+const RAIN_PROB_THRESHOLD = 50;   // % chance to trigger rain alert
+const RAIN_AMT_THRESHOLD  = 0.1;  // inches/day to trigger rain alert
+const WIND_THRESHOLD      = 20;   // mph sustained to trigger wind alert
+const HEAT_THRESHOLD      = 95;   // °F high to trigger heat alert
+const LOOKAHEAD_DAYS      = 3;    // days ahead to check
 
-// ── Fetch weather from Open-Meteo ──
+// ── Fetch 3-day forecast from Open-Meteo ──
 async function fetchWeather(farm) {
   const url =
     `https://api.open-meteo.com/v1/forecast` +
     `?latitude=${farm.lat}&longitude=${farm.lon}` +
-    `&daily=temperature_2m_min,precipitation_sum,precipitation_probability_max` +
-    `&hourly=precipitation,precipitation_probability,temperature_2m` +
-    `&temperature_unit=fahrenheit&precipitation_unit=inch` +
-    `&timezone=America%2FLos_Angeles&forecast_days=2`;
+    `&daily=temperature_2m_min,temperature_2m_max,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max` +
+    `&hourly=precipitation,precipitation_probability,temperature_2m,wind_speed_10m` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
+    `&timezone=America%2FLos_Angeles&forecast_days=${LOOKAHEAD_DAYS + 1}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Weather fetch failed for ${farm.name}`);
   return res.json();
@@ -73,60 +75,99 @@ async function sendPush(title, body, tag) {
     }
   }
   if (dead.length) saveSubs(subs.filter(s => !dead.includes(s.endpoint)));
+  return subs.length - dead.length;
 }
 
-// ── Alert state (prevent duplicate alerts same day) ──
-const alertedToday = new Set();
-function alertKey(farmId, type) {
-  return `${new Date().toDateString()}:${farmId}:${type}`;
+// ── Alert dedup: once per alert-window (6hr block) per farm per type ──
+const alertedThisWindow = new Set();
+function alertWindowKey(farmId, type, date) {
+  // Groups by 6-hour window: 0-6, 6-12, 12-18, 18-24
+  const now = new Date();
+  const window = Math.floor(now.getHours() / 6);
+  return `${now.toDateString()}:${window}:${farmId}:${type}:${date}`;
 }
 
-// ── Core check logic ──
-async function checkAllFarms() {
-  console.log(`[${new Date().toISOString()}] Checking weather for all farms...`);
+function dayLabel(dateStr) {
+  const today = new Date().toDateString();
+  const tomorrow = new Date(Date.now() + 86400000).toDateString();
+  const d = new Date(dateStr + 'T12:00:00');
+  if (d.toDateString() === today) return 'today';
+  if (d.toDateString() === tomorrow) return 'tomorrow';
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+// ── Core check logic — returns list of alerts fired ──
+async function checkAllFarms(manual = false) {
+  console.log(`[${new Date().toISOString()}] Checking weather (manual=${manual})...`);
+  const allAlerts = [];
+
   for (const farm of FARMS) {
     try {
       const data = await fetchWeather(farm);
-      const tonightLow = data.daily.temperature_2m_min[0];
+      const farmAlerts = [];
 
-      // Frost checks
-      for (const threshold of FROST_THRESHOLDS) {
-        const key = alertKey(farm.id, `frost-${threshold.temp}`);
-        if (tonightLow <= threshold.temp && !alertedToday.has(key)) {
-          alertedToday.add(key);
-          await sendPush(
-            `${threshold.emoji} ${threshold.label} — ${farm.name}`,
-            `Tonight's low: ${Math.round(tonightLow)}°F at ${farm.name}. Check tender crops.`,
-            `frost-${farm.id}`
-          );
-          console.log(`  Frost alert sent for ${farm.name}: ${Math.round(tonightLow)}°F`);
+      // Check each of the next LOOKAHEAD_DAYS days
+      for (let i = 0; i < LOOKAHEAD_DAYS; i++) {
+        const date      = data.daily.time[i];
+        const low       = data.daily.temperature_2m_min[i];
+        const high      = data.daily.temperature_2m_max[i];
+        const rainProb  = data.daily.precipitation_probability_max[i];
+        const rainAmt   = data.daily.precipitation_sum[i];
+        const maxWind   = data.daily.wind_speed_10m_max[i];
+        const maxGusts  = data.daily.wind_gusts_10m_max[i];
+        const label     = dayLabel(date);
+        const dayText   = i === 0 ? 'tonight' : `on ${label}`;
+
+        // ── Frost / freeze ──
+        for (const threshold of FROST_THRESHOLDS) {
+          const key = alertWindowKey(farm.id, `frost-${threshold.temp}`, date);
+          if (low <= threshold.temp && (manual || !alertedThisWindow.has(key))) {
+            alertedThisWindow.add(key);
+            const msg = `Low of ${Math.round(low)}°F expected ${dayText} at ${farm.name}.`;
+            await sendPush(`${threshold.emoji} ${threshold.label} — ${farm.name}`, msg, `frost-${farm.id}-${date}`);
+            farmAlerts.push({ type: 'frost', farm: farm.name, date, label, msg: `${threshold.label}: ${msg}` });
+            console.log(`  [frost] ${farm.name} ${date}: ${Math.round(low)}°F`);
+          }
+        }
+
+        // ── Rain ──
+        const rainKey = alertWindowKey(farm.id, 'rain', date);
+        if ((rainProb >= RAIN_PROB_THRESHOLD || rainAmt >= RAIN_AMT_THRESHOLD) && (manual || !alertedThisWindow.has(rainKey))) {
+          alertedThisWindow.add(rainKey);
+          const msg = `${rainProb}% chance of rain (${rainAmt.toFixed(2)}") ${dayText} at ${farm.name}.`;
+          await sendPush(`🌧️ Rain Expected — ${farm.name}`, msg, `rain-${farm.id}-${date}`);
+          farmAlerts.push({ type: 'rain', farm: farm.name, date, label, msg });
+          console.log(`  [rain] ${farm.name} ${date}: ${rainProb}% / ${rainAmt}"`);
+        }
+
+        // ── Wind ──
+        const windKey = alertWindowKey(farm.id, 'wind', date);
+        if (maxWind >= WIND_THRESHOLD && (manual || !alertedThisWindow.has(windKey))) {
+          alertedThisWindow.add(windKey);
+          const msg = `Winds ${Math.round(maxWind)} mph, gusts to ${Math.round(maxGusts)} mph ${dayText} at ${farm.name}. Check spray conditions.`;
+          await sendPush(`💨 High Wind Alert — ${farm.name}`, msg, `wind-${farm.id}-${date}`);
+          farmAlerts.push({ type: 'wind', farm: farm.name, date, label, msg });
+          console.log(`  [wind] ${farm.name} ${date}: ${Math.round(maxWind)} mph`);
+        }
+
+        // ── Heat ──
+        const heatKey = alertWindowKey(farm.id, 'heat', date);
+        if (high >= HEAT_THRESHOLD && (manual || !alertedThisWindow.has(heatKey))) {
+          alertedThisWindow.add(heatKey);
+          const msg = `High of ${Math.round(high)}°F expected ${dayText} at ${farm.name}.`;
+          await sendPush(`🌡️ Heat Alert — ${farm.name}`, msg, `heat-${farm.id}-${date}`);
+          farmAlerts.push({ type: 'heat', farm: farm.name, date, label, msg });
+          console.log(`  [heat] ${farm.name} ${date}: ${Math.round(high)}°F`);
         }
       }
 
-      // Rain in next N hours check
-      const now = new Date();
-      const rainKey = alertKey(farm.id, 'rain');
-      if (!alertedToday.has(rainKey)) {
-        const upcoming = data.hourly.time
-          .map((t, i) => ({ time: new Date(t), prob: data.hourly.precipitation_probability[i], amt: data.hourly.precipitation[i] }))
-          .filter(h => h.time >= now && h.time <= new Date(now.getTime() + RAIN_LOOKAHEAD_HOURS * 3600000));
-
-        const rainHour = upcoming.find(h => h.prob >= RAIN_PROB_THRESHOLD || h.amt >= RAIN_AMT_THRESHOLD);
-        if (rainHour) {
-          alertedToday.add(rainKey);
-          const hrs = Math.round((rainHour.time - now) / 3600000);
-          await sendPush(
-            `🌧️ Rain Expected — ${farm.name}`,
-            `${rainHour.prob}% chance of rain in ~${hrs} hour${hrs !== 1 ? 's' : ''} at ${farm.name}.`,
-            `rain-${farm.id}`
-          );
-          console.log(`  Rain alert sent for ${farm.name}`);
-        }
-      }
+      allAlerts.push(...farmAlerts);
     } catch (err) {
       console.error(`  Error checking ${farm.name}:`, err.message);
     }
   }
+
+  return allAlerts;
 }
 
 // ── API routes ──
@@ -157,6 +198,16 @@ app.post('/api/test-push', async (req, res) => {
   try {
     await sendPush('🧪 Test Alert', 'FarmWeather push notifications are working!', 'test');
     res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Manual alert check — returns what was (or would have been) sent ──
+app.post('/api/check-alerts', async (req, res) => {
+  try {
+    const alerts = await checkAllFarms(true); // manual=true bypasses dedup
+    res.json({ ok: true, count: alerts.length, alerts });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -381,11 +432,13 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
 
-// ── Cron schedule: check every 30 minutes ──
-cron.schedule('*/30 * * * *', checkAllFarms);
+// ── Cron schedule: 6am, noon, 6pm Pacific (America/Los_Angeles) ──
+cron.schedule('0 6 * * *',  () => checkAllFarms(), { timezone: 'America/Los_Angeles' });
+cron.schedule('0 12 * * *', () => checkAllFarms(), { timezone: 'America/Los_Angeles' });
+cron.schedule('0 18 * * *', () => checkAllFarms(), { timezone: 'America/Los_Angeles' });
 
-// Also run once on startup
-checkAllFarms();
+// Run once on startup (no push, just warms up)
+console.log('[Startup] FarmWeather server ready. Alerts scheduled at 6am, 12pm, 6pm Pacific.');
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`FarmWeather server running on port ${PORT}`));
