@@ -302,6 +302,8 @@ async function getNWSGridPoint(lat, lon) {
 
 // Converts m/s to mph
 function msToMph(ms) { return ms == null ? null : Math.round(ms * 2.23694); }
+// Converts km/h to mph (NWS windSpeed and windGust grid values are in km/h)
+function kphToMph(kph) { return kph == null ? null : Math.round(kph * 0.621371); }
 // Converts celsius to fahrenheit
 function cToF(c) { return c == null ? null : (c * 9/5) + 32; }
 // Converts mm to inches
@@ -413,8 +415,8 @@ async function fetchWeather(farm) {
 
   const tempMaxVals  = dailyFromGrid(props.maxTemperature?.values,  cToF);
   const tempMinVals  = dailyFromGrid(props.minTemperature?.values,  cToF);
-  const windMaxVals  = dailyFromGrid(props.windSpeed?.values,        msToMph);
-  const gustMaxVals  = dailyFromGrid(props.windGust?.values,         msToMph);
+  const windMaxVals  = dailyFromGrid(props.windSpeed?.values,        kphToMph);
+  const gustMaxVals  = dailyFromGrid(props.windGust?.values,          kphToMph);
   const precipVals   = dailyFromGrid(props.quantitativePrecipitation?.values, v => mmToIn(v));
   const precipProbVals = dailyFromGrid(props.probabilityOfPrecipitation?.values);
 
@@ -470,7 +472,7 @@ async function fetchWeather(farm) {
     weather_code:         hourly.weather_code[0],
     wind_speed_10m:       windMatch ? parseInt(windMatch[1]) : 0,
     wind_direction_10m:   hourly.wind_direction_10m[0],
-    wind_gusts_10m:       parseNWSTimeSeries(props.windGust?.values || [], [hourlyTimes[0]], msToMph)[0] ?? 0,
+    wind_gusts_10m:       parseNWSTimeSeries(props.windGust?.values || [], [hourlyTimes[0]], kphToMph)[0] ?? 0,
   };
 
   return { current, hourly, daily };
