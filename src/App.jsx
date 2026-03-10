@@ -111,9 +111,11 @@ async function getCurrentPushSub() {
 }
 
 function WindArrow({ deg, size = 20 }) {
+  // Wind degree = direction it comes FROM. Add 180° so arrow points where wind is GOING.
+  const arrowDeg = (deg + 180) % 360;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24"
-      style={{ transform:`rotate(${deg}deg)`, display:"inline-block" }}>
+      style={{ transform:`rotate(${arrowDeg}deg)`, display:"inline-block" }}>
       <path d="M12 2 L7 18 L12 14 L17 18 Z" fill="currentColor" opacity="0.9" />
     </svg>
   );
