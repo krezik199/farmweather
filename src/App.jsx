@@ -47,6 +47,32 @@ function frostRisk(tempF) {
   return null;
 }
 
+// ── Auth helpers ──
+const TOKEN_KEY = 'fw_auth_token';
+
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function setToken(token) {
+  try { localStorage.setItem(TOKEN_KEY, token); } catch {}
+}
+function clearToken() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch {}
+}
+
+// Authenticated fetch wrapper — auto-attaches Bearer token
+async function apiFetch(url, options = {}) {
+  const token = getToken();
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  });
+}
+
 async function fetchWeather(lat, lon) {
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
@@ -69,41 +95,26 @@ function urlBase64ToUint8Array(base64String) {
   const rawData = window.atob(base64);
   return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
-
 async function getVapidKey() {
   const res = await fetch('/api/vapid-public-key');
   const { key } = await res.json();
   return key;
 }
-
 async function subscribeToPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('Push not supported');
   const reg = await navigator.serviceWorker.ready;
   const vapidKey = await getVapidKey();
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(vapidKey),
-  });
-  const res = await fetch('/api/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sub),
-  });
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapidKey) });
+  const res = await apiFetch('/api/subscribe', { method: 'POST', body: JSON.stringify(sub) });
   return res.ok;
 }
-
 async function unsubscribeFromPush() {
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
   if (!sub) return;
-  await fetch('/api/subscribe', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint: sub.endpoint }),
-  });
+  await apiFetch('/api/subscribe', { method: 'DELETE', body: JSON.stringify({ endpoint: sub.endpoint }) });
   await sub.unsubscribe();
 }
-
 async function getCurrentPushSub() {
   if (!('serviceWorker' in navigator)) return null;
   const reg = await navigator.serviceWorker.ready;
@@ -111,7 +122,6 @@ async function getCurrentPushSub() {
 }
 
 function WindArrow({ deg, size = 20 }) {
-  // Wind degree = direction it comes FROM. Add 180° so arrow points where wind is GOING.
   const arrowDeg = (deg + 180) % 360;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24"
@@ -121,13 +131,198 @@ function WindArrow({ deg, size = 20 }) {
   );
 }
 
+// ══════════════════════════════════════════
+// LOGIN SCREEN
+// ══════════════════════════════════════════
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    if (!username.trim() || !password) { setError('Please enter username and password.'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Login failed'); setLoading(false); return; }
+      setToken(data.token);
+      onLogin(data.user, data.token);
+    } catch {
+      setError('Network error — please try again.');
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div style={{
+      fontFamily:"'SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif",
+      background:"#0a0f1a", minHeight:"100vh", display:"flex",
+      alignItems:"center", justifyContent:"center", padding:24,
+    }}>
+      <style>{`body{margin:0;background:#0a0f1a} input::placeholder{color:#475569} @keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{ width:"100%", maxWidth:380 }}>
+        {/* Logo */}
+        <div style={{ textAlign:"center", marginBottom:36 }}>
+          <div style={{ fontSize:48, marginBottom:8 }}>⛅</div>
+          <div style={{ fontSize:22, fontWeight:700, color:"#38bdf8", letterSpacing:"0.1em", textTransform:"uppercase" }}>FarmWeather</div>
+          <div style={{ fontSize:13, color:"#475569", marginTop:4 }}>Hyer Farms · Upper Columbia Basin</div>
+        </div>
+
+        {/* Card */}
+        <div style={{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:20, padding:28 }}>
+          <div style={{ fontSize:17, fontWeight:700, color:"#f0f9ff", marginBottom:20 }}>Sign In</div>
+
+          {error && (
+            <div style={{ background:"#7f1d1d", border:"1px solid #ef4444", borderRadius:10, padding:"10px 14px", marginBottom:14, fontSize:13, color:"#fca5a5" }}>
+              ⚠️ {error}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} style={{ display:"flex", flexDirection:"column", gap:0 }}>
+            <div style={{ fontSize:12, color:"#94a3b8", marginBottom:4 }}>Username</div>
+            <input
+              style={{ width:"100%", background:"#0a1628", border:"1px solid #1e3a5f", borderRadius:10, padding:"11px 14px", color:"#e2e8f0", fontSize:15, marginBottom:12, boxSizing:"border-box", outline:"none" }}
+              placeholder="username"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="username"
+            />
+            <div style={{ fontSize:12, color:"#94a3b8", marginBottom:4 }}>Password</div>
+            <input
+              style={{ width:"100%", background:"#0a1628", border:"1px solid #1e3a5f", borderRadius:10, padding:"11px 14px", color:"#e2e8f0", fontSize:15, marginBottom:20, boxSizing:"border-box", outline:"none" }}
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+            <button
+              type="submit"
+              disabled={loading}
+              style={{ width:"100%", padding:13, borderRadius:12, fontSize:15, fontWeight:700, cursor:"pointer", border:"none", background:"#38bdf8", color:"#0a0f1a" }}>
+              {loading ? 'Signing in...' : 'Sign In'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// ADMIN PANEL
+// ══════════════════════════════════════════
+function AdminPanel({ onClose }) {
+  const [users, setUsers]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [adding, setAdding]     = useState(false);
+  const [newUser, setNewUser]   = useState({ username:'', password:'', role:'user' });
+  const [msg, setMsg]           = useState('');
+
+  const loadUsers = async () => {
+    setLoading(true);
+    const res = await apiFetch('/api/auth/users');
+    if (res.ok) setUsers(await res.json());
+    setLoading(false);
+  };
+  useEffect(() => { loadUsers(); }, []);
+
+  async function addUser() {
+    if (!newUser.username.trim() || !newUser.password) { setMsg('Username and password required.'); return; }
+    const res = await apiFetch('/api/auth/users', { method:'POST', body: JSON.stringify(newUser) });
+    const data = await res.json();
+    if (!res.ok) { setMsg(data.error || 'Error'); return; }
+    setMsg(`✅ User "${data.username}" created.`);
+    setNewUser({ username:'', password:'', role:'user' });
+    setAdding(false);
+    loadUsers();
+  }
+
+  async function deleteUser(id, username) {
+    if (!confirm(`Delete user "${username}"?`)) return;
+    const res = await apiFetch(`/api/auth/users/${id}`, { method:'DELETE' });
+    const data = await res.json();
+    if (!res.ok) { setMsg(data.error || 'Error'); return; }
+    setMsg(`🗑 Deleted "${username}".`);
+    loadUsers();
+  }
+
+  const s = {
+    overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.75)', zIndex:200, display:'flex', alignItems:'flex-end' },
+    box: { background:'#0f1f35', border:'1px solid #1e3a5f', borderRadius:'20px 20px 0 0', padding:24, width:'100%', maxWidth:430, margin:'0 auto', maxHeight:'88vh', overflowY:'auto' },
+    input: { width:'100%', background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:10, padding:'10px 14px', color:'#e2e8f0', fontSize:14, marginBottom:10, boxSizing:'border-box', outline:'none' },
+    btn: (v) => ({ width:'100%', padding:11, borderRadius:10, fontSize:14, fontWeight:700, cursor:'pointer', border:'none', marginBottom:8,
+      background: v==='primary'?'#38bdf8': v==='danger'?'#7f1d1d': '#1e293b',
+      color: v==='primary'?'#0a0f1a': v==='danger'?'#f87171': '#94a3b8' }),
+    btnSm: (v) => ({ padding:'5px 10px', borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer', border:'1px solid',
+      background:'transparent', borderColor: v==='danger'?'#7f1d1d':'#334155', color: v==='danger'?'#f87171':'#94a3b8' }),
+  };
+
+  return (
+    <div style={s.overlay} onClick={onClose}>
+      <div style={s.box} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:17, fontWeight:700, color:'#f0f9ff', marginBottom:4 }}>👥 User Management</div>
+        <div style={{ fontSize:12, color:'#475569', marginBottom:16 }}>Admin only</div>
+
+        {msg && <div style={{ fontSize:13, color:'#94a3b8', marginBottom:12 }}>{msg}</div>}
+
+        {loading && <div style={{ fontSize:13, color:'#475569' }}>Loading...</div>}
+
+        {!loading && users.map(u => (
+          <div key={u.id} style={{ background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'10px 14px', marginBottom:8, display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:14, fontWeight:700, color:'#f0f9ff' }}>{u.username}</div>
+              <div style={{ fontSize:11, color:'#475569' }}>
+                {u.role === 'admin' ? '🔑 Admin' : '👤 User'}
+                {' · '}Added {new Date(u.createdAt).toLocaleDateString()}
+              </div>
+            </div>
+            <button style={s.btnSm('danger')} onClick={() => deleteUser(u.id, u.username)}>🗑</button>
+          </div>
+        ))}
+
+        {adding ? (
+          <div style={{ background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:16, marginTop:8 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'#f0f9ff', marginBottom:10 }}>New User</div>
+            <input style={s.input} placeholder="Username" value={newUser.username} onChange={e => setNewUser(n => ({...n, username: e.target.value}))} autoCapitalize="none" />
+            <input style={s.input} type="password" placeholder="Password" value={newUser.password} onChange={e => setNewUser(n => ({...n, password: e.target.value}))} />
+            <div style={{ position:'relative', marginBottom:10 }}>
+              <select style={{ ...s.input, marginBottom:0, appearance:'none', WebkitAppearance:'none' }} value={newUser.role} onChange={e => setNewUser(n => ({...n, role: e.target.value}))}>
+                <option value="user">👤 User</option>
+                <option value="admin">🔑 Admin</option>
+              </select>
+              <span style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', color:'#475569', pointerEvents:'none' }}>▼</span>
+            </div>
+            <button style={s.btn('primary')} onClick={addUser}>Create User</button>
+            <button style={s.btn()} onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        ) : (
+          <button style={{ ...s.btn('primary'), marginTop:8 }} onClick={() => { setAdding(true); setMsg(''); }}>+ Add User</button>
+        )}
+
+        <button style={s.btn()} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Notification Settings Panel ──
 function NotificationPanel({ onClose }) {
   const [status, setStatus]     = useState('checking');
   const [loading, setLoading]   = useState(false);
   const [checking, setChecking] = useState(false);
   const [msg, setMsg]           = useState('');
-  const [alertResults, setAlertResults] = useState(null); // null | []
+  const [alertResults, setAlertResults] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -159,21 +354,14 @@ function NotificationPanel({ onClose }) {
   }
 
   async function getMySubscription() {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      return await reg.pushManager.getSubscription();
-    } catch { return null; }
+    try { const reg = await navigator.serviceWorker.ready; return await reg.pushManager.getSubscription(); } catch { return null; }
   }
 
   async function sendTest() {
     setLoading(true); setMsg(''); setAlertResults(null);
     try {
       const subscription = await getMySubscription();
-      const res = await fetch('/api/test-push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscription }),
-      });
+      const res = await apiFetch('/api/test-push', { method:'POST', body: JSON.stringify({ subscription }) });
       if (res.ok) setMsg('📲 Test notification sent!');
       else setMsg('❌ Failed to send test.');
     } catch { setMsg('❌ Error sending test.'); }
@@ -184,14 +372,9 @@ function NotificationPanel({ onClose }) {
     setChecking(true); setMsg(''); setAlertResults(null);
     try {
       const subscription = await getMySubscription();
-      const res = await fetch('/api/check-alerts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscription }),
-      });
+      const res = await apiFetch('/api/check-alerts', { method:'POST', body: JSON.stringify({ subscription }) });
       const data = await res.json();
       setAlertResults(data.alerts || []);
-      if (data.alerts.length === 0) setMsg('');
     } catch { setMsg('❌ Error checking alerts.'); }
     setChecking(false);
   }
@@ -204,59 +387,43 @@ function NotificationPanel({ onClose }) {
     row: { background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'12px 14px', marginBottom:8 },
     rowTitle: { fontSize:13, fontWeight:700, color:'#e2e8f0', marginBottom:3 },
     rowDesc: { fontSize:12, color:'#64748b' },
-    badge: (on) => ({ display:'inline-block', padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:700,
-      background: on ? '#14532d' : '#1e293b', color: on ? '#22c55e' : '#475569', marginBottom:10 }),
-    btn: (v) => ({ width:'100%', padding:13, borderRadius:12, fontSize:15, fontWeight:700, cursor:'pointer',
-      border:'none', marginBottom:8, background: v==='primary'?'#38bdf8': v==='danger'?'#7f1d1d': v==='green'?'#15803d':'#1e293b',
+    badge: (on) => ({ display:'inline-block', padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:700, background: on?'#14532d':'#1e293b', color: on?'#22c55e':'#475569', marginBottom:10 }),
+    btn: (v) => ({ width:'100%', padding:13, borderRadius:12, fontSize:15, fontWeight:700, cursor:'pointer', border:'none', marginBottom:8,
+      background: v==='primary'?'#38bdf8': v==='danger'?'#7f1d1d': v==='green'?'#15803d':'#1e293b',
       color: v==='primary'?'#0a0f1a': v==='danger'?'#f87171': v==='green'?'#f0fdf4':'#94a3b8' }),
     msg: { fontSize:13, color:'#94a3b8', textAlign:'center', marginBottom:8, minHeight:20 },
   };
-
-  const ALERT_ICONS = { frost:'❄️', rain:'🌧️', wind:'💨', heat:'🌡️' };
 
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.box} onClick={e => e.stopPropagation()}>
         <div style={s.title}>🔔 Push Notifications</div>
         <div style={s.sub}>Alerts sent to this device at 6am, noon, and 6pm for the next 3 days.</div>
-
-        {/* Alert types */}
         {[
-          { emoji:'❄️', title:'Frost & Freeze',  desc:'36°F frost possible · 32°F freeze · 28°F hard freeze — up to 3 days ahead' },
-          { emoji:'🌧️', title:'Rain',             desc:'50%+ chance or 0.1"+ forecast — up to 3 days ahead' },
-          { emoji:'💨', title:'High Wind',        desc:'Sustained winds ≥20 mph — spray condition risk' },
-          { emoji:'🌡️', title:'Heat',             desc:'High temperatures ≥95°F forecast' },
+          { emoji:'❄️', title:'Frost & Freeze', desc:'36°F frost possible · 32°F freeze · 28°F hard freeze — up to 3 days ahead' },
+          { emoji:'🌧️', title:'Rain',            desc:'50%+ chance or 0.1\"+ forecast — up to 3 days ahead' },
+          { emoji:'💨', title:'High Wind',       desc:'Sustained winds ≥20 mph — spray condition risk' },
+          { emoji:'🌡️', title:'Heat',            desc:'High temperatures ≥95°F forecast' },
         ].map(a => (
           <div key={a.title} style={s.row}>
             <div style={s.rowTitle}>{a.emoji} {a.title}</div>
             <div style={s.rowDesc}>{a.desc}</div>
           </div>
         ))}
-
-        {/* Status */}
-        {status === 'checking' && <div style={s.msg}>Checking notification status...</div>}
-        {status === 'unsupported' && <div style={{ ...s.msg, color:'#f87171' }}>⚠️ Push requires iOS 16.4+ and app added to Home Screen via Safari.</div>}
-        {status === 'denied' && <div style={{ ...s.msg, color:'#f87171' }}>Notifications blocked. Go to Settings → Safari → Notifications to allow.</div>}
-
+        {status === 'checking'     && <div style={s.msg}>Checking notification status...</div>}
+        {status === 'unsupported'  && <div style={{ ...s.msg, color:'#f87171' }}>⚠️ Push requires iOS 16.4+ and app added to Home Screen via Safari.</div>}
+        {status === 'denied'       && <div style={{ ...s.msg, color:'#f87171' }}>Notifications blocked. Go to Settings → Safari → Notifications to allow.</div>}
         {(status === 'subscribed' || status === 'unsubscribed') && (
           <>
-            <div style={s.badge(status === 'subscribed')}>
-              {status === 'subscribed' ? '● ALERTS ON' : '○ ALERTS OFF'}
-            </div>
+            <div style={s.badge(status === 'subscribed')}>{status === 'subscribed' ? '● ALERTS ON' : '○ ALERTS OFF'}</div>
             {msg && <div style={s.msg}>{msg}</div>}
-
-            {/* Manual check results */}
             {alertResults !== null && (
               <div style={{ background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:12, padding:'12px 14px', marginBottom:10 }}>
                 {alertResults.length === 0 ? (
-                  <div style={{ fontSize:13, color:'#22c55e', textAlign:'center' }}>
-                    ✅ No weather alerts in the next 3 days
-                  </div>
+                  <div style={{ fontSize:13, color:'#22c55e', textAlign:'center' }}>✅ No weather alerts in the next 3 days</div>
                 ) : (
                   <>
-                    <div style={{ fontSize:12, fontWeight:700, color:'#f59e0b', marginBottom:8 }}>
-                      {alertResults.length} notification{alertResults.length !== 1 ? 's' : ''} sent
-                    </div>
+                    <div style={{ fontSize:12, fontWeight:700, color:'#f59e0b', marginBottom:8 }}>{alertResults.length} notification{alertResults.length !== 1 ? 's' : ''} sent</div>
                     {alertResults.map((a, i) => (
                       <div key={i} style={{ padding:'8px 0', borderBottom: i < alertResults.length-1 ? '1px solid #1e293b' : 'none' }}>
                         <div style={{ fontSize:13, fontWeight:700, color:'#e2e8f0', marginBottom:3 }}>{a.title}</div>
@@ -267,61 +434,68 @@ function NotificationPanel({ onClose }) {
                 )}
               </div>
             )}
-
             {status === 'unsubscribed' && (
-              <button style={s.btn('primary')} onClick={enable} disabled={loading}>
-                {loading ? 'Enabling...' : 'Enable Alerts on This Device'}
-              </button>
+              <button style={s.btn('primary')} onClick={enable} disabled={loading}>{loading ? 'Enabling...' : 'Enable Alerts on This Device'}</button>
             )}
             {status === 'subscribed' && (
               <>
-                <button style={s.btn('green')} onClick={checkNow} disabled={checking || loading}>
-                  {checking ? 'Checking...' : '🔍 Check for Alerts Now'}
-                </button>
-                <button style={s.btn('secondary')} onClick={sendTest} disabled={loading || checking}>
-                  {loading ? 'Sending...' : '📲 Send Test Notification'}
-                </button>
-                <button style={s.btn('danger')} onClick={disable} disabled={loading}>
-                  Disable Alerts
-                </button>
+                <button style={s.btn('green')} onClick={checkNow} disabled={checking || loading}>{checking ? 'Checking...' : '🔍 Check for Alerts Now'}</button>
+                <button style={s.btn('secondary')} onClick={sendTest} disabled={loading || checking}>{loading ? 'Sending...' : '📲 Send Test Notification'}</button>
+                <button style={s.btn('danger')} onClick={disable} disabled={loading}>Disable Alerts</button>
               </>
             )}
           </>
         )}
-
         <button style={s.btn('secondary')} onClick={onClose}>Close</button>
-        <div style={{ fontSize:11, color:'#334155', textAlign:'center', marginTop:4 }}>
-          Scheduled at 6am · 12pm · 6pm Pacific · Each device subscribes independently
-        </div>
+        <div style={{ fontSize:11, color:'#334155', textAlign:'center', marginTop:4 }}>Scheduled at 6am · 12pm · 6pm Pacific · Each device subscribes independently</div>
       </div>
     </div>
   );
 }
 
-// ── Main App ──
+// ══════════════════════════════════════════
+// MAIN APP
+// ══════════════════════════════════════════
 export default function FarmWeather() {
+  // ── Auth state ──
+  const [authState, setAuthState] = useState('checking'); // 'checking' | 'loggedOut' | 'loggedIn'
+  const [currentUser, setCurrentUser] = useState(null);
+
+  // ── App state ──
   const [farms, setFarms] = useState(() => {
     try { return JSON.parse(localStorage.getItem("farms")) || DEFAULT_FARMS; } catch { return DEFAULT_FARMS; }
   });
-  const [activeFarm, setActiveFarm]     = useState(0);
-  const [weather, setWeather]           = useState({});
-  const [loading, setLoading]           = useState({});
-  const [errors, setErrors]             = useState({});
-  const [tab, setTab]                   = useState("now");
-  const [mainTab, setMainTab]           = useState("weather"); // "weather" | "gdd"
-  const [showAddFarm, setShowAddFarm]   = useState(false);
-  const [newFarm, setNewFarm]           = useState({ name:"", lat:"", lon:"" });
-  const [editingId, setEditingId]       = useState(null);
-  const [lastRefresh, setLastRefresh]   = useState(null);
+  const [activeFarm, setActiveFarm]         = useState(0);
+  const [weather, setWeather]               = useState({});
+  const [loading, setLoading]               = useState({});
+  const [errors, setErrors]                 = useState({});
+  const [tab, setTab]                       = useState("now");
+  const [mainTab, setMainTab]               = useState("weather");
+  const [showAddFarm, setShowAddFarm]       = useState(false);
+  const [newFarm, setNewFarm]               = useState({ name:"", lat:"", lon:"" });
+  const [editingId, setEditingId]           = useState(null);
+  const [lastRefresh, setLastRefresh]       = useState(null);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
   const [showManageFarms, setShowManageFarms] = useState(false);
-  const [notifOn, setNotifOn]           = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [notifOn, setNotifOn]               = useState(false);
+
+  // ── Check session on load ──
+  useEffect(() => {
+    const token = getToken();
+    if (!token) { setAuthState('loggedOut'); return; }
+    fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.user) { setCurrentUser(data.user); setAuthState('loggedIn'); }
+        else { clearToken(); setAuthState('loggedOut'); }
+      })
+      .catch(() => { clearToken(); setAuthState('loggedOut'); });
+  }, []);
 
   // Register service worker
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(console.error);
-    }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(console.error);
     getCurrentPushSub().then(sub => setNotifOn(!!sub));
   }, []);
 
@@ -339,9 +513,34 @@ export default function FarmWeather() {
     }
   }, []);
 
-  useEffect(() => { farms.forEach(f => loadWeather(f)); }, []);
+  useEffect(() => { if (authState === 'loggedIn') farms.forEach(f => loadWeather(f)); }, [authState]);
   useEffect(() => { try { localStorage.setItem("farms", JSON.stringify(farms)); } catch {} }, [farms]);
 
+  async function handleLogout() {
+    try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch {}
+    clearToken();
+    setCurrentUser(null);
+    setAuthState('loggedOut');
+  }
+
+  // ── Auth screens ──
+  if (authState === 'checking') {
+    return (
+      <div style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", background:"#0a0f1a", minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <style>{`body{margin:0;background:#0a0f1a} @keyframes spin{to{transform:rotate(360deg)}}`}</style>
+        <div style={{ textAlign:"center" }}>
+          <div style={{ width:36, height:36, border:"3px solid #1e3a5f", borderTop:"3px solid #38bdf8", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto 12px" }}/>
+          <div style={{ fontSize:13, color:"#475569" }}>Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authState === 'loggedOut') {
+    return <LoginScreen onLogin={(user) => { setCurrentUser(user); setAuthState('loggedIn'); }} />;
+  }
+
+  // ── Main app (logged in) ──
   const farm    = farms[activeFarm];
   const data    = farm ? weather[farm.id]  : null;
   const isLoading = farm ? loading[farm.id] : false;
@@ -355,13 +554,9 @@ export default function FarmWeather() {
 
   const now = new Date();
   const hourlyFull = hourly ? hourly.time.map((t,i) => ({
-    time: new Date(t),
-    precip: hourly.precipitation[i],
-    prob:   hourly.precipitation_probability[i],
-    wind:   hourly.wind_speed_10m[i],
-    windDir:hourly.wind_direction_10m[i],
-    temp:   hourly.temperature_2m[i],
-    code:   hourly.weather_code[i],
+    time: new Date(t), precip: hourly.precipitation[i], prob: hourly.precipitation_probability[i],
+    wind: hourly.wind_speed_10m[i], windDir: hourly.wind_direction_10m[i],
+    temp: hourly.temperature_2m[i], code: hourly.weather_code[i],
   })).filter(h => h.time >= now).slice(0,24) : [];
 
   function addFarm() {
@@ -426,18 +621,18 @@ export default function FarmWeather() {
         <div style={S.headerTop}>
           <div style={S.logo}>⛅ FarmWeather</div>
           <div style={S.headerActions}>
-            <button style={S.notifBtn(notifOn)} title="Notification Settings"
-              onClick={() => setShowNotifPanel(true)}>🔔</button>
-            <button style={S.refreshBtn} onClick={() => farms.forEach(f => loadWeather(f))}>↻ Refresh</button>
+            {currentUser?.role === 'admin' && (
+              <button style={{ ...S.refreshBtn, color:"#f59e0b", borderColor:"#78350f" }} title="User Management" onClick={() => setShowAdminPanel(true)}>👥</button>
+            )}
+            <button style={S.notifBtn(notifOn)} title="Notification Settings" onClick={() => setShowNotifPanel(true)}>🔔</button>
+            <button style={S.refreshBtn} onClick={() => farms.forEach(f => loadWeather(f))}>↻</button>
+            <button style={{ ...S.refreshBtn, borderColor:"#334155" }} title={`Signed in as ${currentUser?.username}`} onClick={handleLogout}>⏏</button>
           </div>
         </div>
         <div style={S.farmSelector}>
           <div style={S.farmDropdownWrap}>
-            <select style={S.farmDropdown} value={activeFarm}
-              onChange={e => setActiveFarm(parseInt(e.target.value))}>
-              {farms.map((f,i) => (
-                <option key={f.id} value={i}>{f.name}</option>
-              ))}
+            <select style={S.farmDropdown} value={activeFarm} onChange={e => setActiveFarm(parseInt(e.target.value))}>
+              {farms.map((f,i) => <option key={f.id} value={i}>{f.name}</option>)}
             </select>
             <span style={S.farmDropdownArrow}>▼</span>
           </div>
@@ -445,19 +640,16 @@ export default function FarmWeather() {
         </div>
       </div>
 
-      {mainTab === "gdd" && <GDDTab farms={farms} />}
-      {mainTab === "data" && <DataTab farms={farms} />}
+      {mainTab === "gdd"  && <GDDTab farms={farms} apiFetch={apiFetch} />}
+      {mainTab === "data" && <DataTab farms={farms} apiFetch={apiFetch} />}
 
       {mainTab === "weather" && <div style={S.body}>
-        {isLoading && (
-          <div style={S.loadingBox}><div style={S.spinner} /><span style={{ fontSize:13 }}>Fetching weather...</span></div>
-        )}
+        {isLoading && <div style={S.loadingBox}><div style={S.spinner}/><span style={{ fontSize:13 }}>Fetching weather...</span></div>}
         {error && !isLoading && (
           <div style={{ ...S.card, textAlign:"center", color:"#f87171" }}>
             ⚠️ {error}<br/><button style={{ ...S.refreshBtn, marginTop:10 }} onClick={() => loadWeather(farm)}>Retry</button>
           </div>
         )}
-
         {cur && !isLoading && (
           <>
             <div style={S.card}>
@@ -502,9 +694,7 @@ export default function FarmWeather() {
               <div style={S.sprayBanner(spray)}>
                 <div style={S.sectionTitle}>🌿 Spray Conditions</div>
                 <div style={{ fontSize:17, fontWeight:800, color:spray.color, marginTop:4 }}>{spray.label}</div>
-                <div style={{ fontSize:12, color:"#94a3b8", marginTop:4 }}>
-                  {Math.round(windMph)} mph {windDir(cur.wind_direction_10m)} · Gusts {Math.round(cur.wind_gusts_10m)} mph
-                </div>
+                <div style={{ fontSize:12, color:"#94a3b8", marginTop:4 }}>{Math.round(windMph)} mph {windDir(cur.wind_direction_10m)} · Gusts {Math.round(cur.wind_gusts_10m)} mph</div>
               </div>
             )}
 
@@ -649,13 +839,11 @@ export default function FarmWeather() {
         return (
           <div style={S.modal} onClick={() => { setShowManageFarms(false); setShowAddFarm(false); setEditingId(null); }}>
             <div style={{ ...S.modalBox, maxHeight:"85vh", overflowY:"auto" }} onClick={e=>e.stopPropagation()}>
-
-              {/* Add new farm form */}
               {isAdding ? (
                 <>
                   <div style={{ fontSize:17, fontWeight:700, marginBottom:4, color:"#f0f9ff" }}>Add Farm Location</div>
                   <div style={{ fontSize:12, color:"#475569", marginBottom:14 }}>💡 Tap & hold in Google Maps to get coordinates</div>
-                  <input style={S.input} placeholder="Farm Name (e.g. South Pivot)" value={newFarm.name} onChange={e=>setNewFarm(n=>({...n,name:e.target.value}))} autoFocus/>
+                  <input style={S.input} placeholder="Farm Name" value={newFarm.name} onChange={e=>setNewFarm(n=>({...n,name:e.target.value}))} autoFocus/>
                   <input style={S.input} placeholder="Latitude (e.g. 47.2341)" value={newFarm.lat} onChange={e=>setNewFarm(n=>({...n,lat:e.target.value}))} type="number" step="0.0001"/>
                   <input style={S.input} placeholder="Longitude (e.g. -119.0823)" value={newFarm.lon} onChange={e=>setNewFarm(n=>({...n,lon:e.target.value}))} type="number" step="0.0001"/>
                   <button style={S.btn("primary")} onClick={() => { addFarm(); setShowManageFarms(false); }}>Add Farm</button>
@@ -667,15 +855,10 @@ export default function FarmWeather() {
                 return (
                   <>
                     <div style={{ fontSize:17, fontWeight:700, marginBottom:14, color:"#f0f9ff" }}>Edit — {ef.name}</div>
-                    <input style={S.input} placeholder="Farm Name" value={ef.name}
-                      onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,name:e.target.value}:f))}/>
-                    <input style={S.input} placeholder="Latitude" value={ef.lat} type="number" step="0.0001"
-                      onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lat:parseFloat(e.target.value)}:f))}/>
-                    <input style={S.input} placeholder="Longitude" value={ef.lon} type="number" step="0.0001"
-                      onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lon:parseFloat(e.target.value)}:f))}/>
-                    <div style={{ fontSize:11, color:"#475569", marginBottom:12 }}>
-                      Current: {ef.lat.toFixed(6)}, {ef.lon.toFixed(6)}
-                    </div>
+                    <input style={S.input} placeholder="Farm Name" value={ef.name} onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,name:e.target.value}:f))}/>
+                    <input style={S.input} placeholder="Latitude" value={ef.lat} type="number" step="0.0001" onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lat:parseFloat(e.target.value)}:f))}/>
+                    <input style={S.input} placeholder="Longitude" value={ef.lon} type="number" step="0.0001" onChange={e=>setFarms(fs=>fs.map(f=>f.id===editingId?{...f,lon:parseFloat(e.target.value)}:f))}/>
+                    <div style={{ fontSize:11, color:"#475569", marginBottom:12 }}>Current: {ef.lat.toFixed(6)}, {ef.lon.toFixed(6)}</div>
                     <button style={S.btn("primary")} onClick={()=>{ loadWeather(ef); setEditingId(null); }}>Save & Refresh</button>
                     <button style={S.btn("secondary")} onClick={()=>setEditingId(null)}>← Back</button>
                   </>
@@ -684,26 +867,18 @@ export default function FarmWeather() {
                 <>
                   <div style={{ fontSize:17, fontWeight:700, marginBottom:4, color:"#f0f9ff" }}>Manage Farm Locations</div>
                   <div style={{ fontSize:12, color:"#475569", marginBottom:14 }}>Tap a farm to edit its name or coordinates.</div>
-
                   {farms.map((f,i) => (
                     <div key={f.id} style={{ background:"#0a1628", border:"1px solid #1e3a5f", borderRadius:12, padding:"12px 14px", marginBottom:8, display:"flex", alignItems:"center", gap:10 }}>
                       <div style={{ flex:1, cursor:"pointer" }} onClick={()=>setEditingId(f.id)}>
                         <div style={{ fontSize:15, fontWeight:700, color:"#f0f9ff" }}>{f.name}</div>
-                        <div style={{ fontSize:11, color:"#475569", marginTop:2, fontFamily:"monospace" }}>
-                          {f.lat.toFixed(6)}, {f.lon.toFixed(6)}
-                        </div>
+                        <div style={{ fontSize:11, color:"#475569", marginTop:2, fontFamily:"monospace" }}>{f.lat.toFixed(6)}, {f.lon.toFixed(6)}</div>
                       </div>
-                      <button
-                        style={{ background:"transparent", border:"1px solid #334155", color:"#94a3b8", borderRadius:8, padding:"6px 10px", fontSize:13, cursor:"pointer" }}
-                        onClick={()=>setEditingId(f.id)}>✎</button>
+                      <button style={{ background:"transparent", border:"1px solid #334155", color:"#94a3b8", borderRadius:8, padding:"6px 10px", fontSize:13, cursor:"pointer" }} onClick={()=>setEditingId(f.id)}>✎</button>
                       {farms.length > 1 && (
-                        <button
-                          style={{ background:"transparent", border:"1px solid #7f1d1d", color:"#f87171", borderRadius:8, padding:"6px 10px", fontSize:13, cursor:"pointer" }}
-                          onClick={()=>{ deleteFarm(f.id); }}>🗑</button>
+                        <button style={{ background:"transparent", border:"1px solid #7f1d1d", color:"#f87171", borderRadius:8, padding:"6px 10px", fontSize:13, cursor:"pointer" }} onClick={()=>deleteFarm(f.id)}>🗑</button>
                       )}
                     </div>
                   ))}
-
                   <button style={{ ...S.btn("primary"), marginTop:8 }} onClick={()=>setShowAddFarm(true)}>+ Add New Farm</button>
                   <button style={S.btn("secondary")} onClick={()=>{ setShowManageFarms(false); setEditingId(null); }}>Done</button>
                 </>
@@ -713,37 +888,23 @@ export default function FarmWeather() {
         );
       })()}
 
-      {/* Notification Panel */}
-      {showNotifPanel && (
-        <NotificationPanel onClose={() => { setShowNotifPanel(false); getCurrentPushSub().then(s=>setNotifOn(!!s)); }}/>
-      )}
+      {showNotifPanel && <NotificationPanel onClose={() => { setShowNotifPanel(false); getCurrentPushSub().then(s=>setNotifOn(!!s)); }}/>}
+      {showAdminPanel && <AdminPanel onClose={() => setShowAdminPanel(false)} />}
 
       {/* Bottom Nav */}
-      <div style={{
-        position:"fixed", bottom:0, left:0, right:0,
-        background:"#0a0f1a",
-        borderTop:"1px solid #1e3a5f",
-        display:"flex",
-        paddingBottom:"env(safe-area-inset-bottom, 0px)",
-        zIndex:60,
-      }}>
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, background:"#0a0f1a", borderTop:"1px solid #1e3a5f", display:"flex", paddingBottom:"env(safe-area-inset-bottom, 0px)", zIndex:60 }}>
         <div style={{ display:"flex", width:"100%", maxWidth:430, margin:"0 auto" }}>
-        {[
-          { id:"weather", label:"Weather", icon:"⛅" },
-          { id:"gdd",     label:"GDD",     icon:"🌡️" },
-          { id:"data",    label:"Data",    icon:"📋" },
-        ].map(t => (
-          <button key={t.id} onClick={() => setMainTab(t.id)} style={{
-            flex:1, padding:"10px 0 8px", background:"transparent", border:"none", cursor:"pointer",
-            display:"flex", flexDirection:"column", alignItems:"center", gap:2,
-          }}>
-            <span style={{ fontSize:22 }}>{t.icon}</span>
-            <span style={{ fontSize:11, fontWeight: mainTab===t.id ? 700 : 500, color: mainTab===t.id ? "#38bdf8" : "#475569" }}>
-              {t.label}
-            </span>
-            {mainTab===t.id && <div style={{ width:20, height:2, borderRadius:1, background:"#38bdf8" }}/>}
-          </button>
-        ))}
+          {[
+            { id:"weather", label:"Weather", icon:"⛅" },
+            { id:"gdd",     label:"GDD",     icon:"🌡️" },
+            { id:"data",    label:"Data",    icon:"📋" },
+          ].map(t => (
+            <button key={t.id} onClick={() => setMainTab(t.id)} style={{ flex:1, padding:"10px 0 8px", background:"transparent", border:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+              <span style={{ fontSize:22 }}>{t.icon}</span>
+              <span style={{ fontSize:11, fontWeight: mainTab===t.id ? 700 : 500, color: mainTab===t.id ? "#38bdf8" : "#475569" }}>{t.label}</span>
+              {mainTab===t.id && <div style={{ width:20, height:2, borderRadius:1, background:"#38bdf8" }}/>}
+            </button>
+          ))}
         </div>
       </div>
     </div>

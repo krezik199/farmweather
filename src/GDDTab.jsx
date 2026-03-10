@@ -112,7 +112,7 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/fields/${field.id}/gdd`)
+    apiFetch(`/api/fields/${field.id}/gdd`)
       .then(r => r.json())
       .then(d => { setGddData(d); setLoading(false); })
       .catch(() => { setError("Failed to load GDD"); setLoading(false); });
@@ -340,7 +340,7 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
   );
 }
 
-export default function GDDTab({ farms }) {
+export default function GDDTab({ farms, apiFetch }) {
   const [fields, setFields]             = useState([]);
   const [loading, setLoading]           = useState(true);
   const [showAdd, setShowAdd]           = useState(false);
@@ -351,7 +351,7 @@ export default function GDDTab({ farms }) {
 
   const loadFields = useCallback(() => {
     setLoading(true);
-    fetch('/api/fields')
+    apiFetch('/api/fields')
       .then(r => r.json())
       .then(data => { setFields(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => { setFields([]); setLoading(false); });
@@ -383,7 +383,7 @@ export default function GDDTab({ farms }) {
     try {
       const url    = editingField ? `/api/fields/${editingField.id}` : '/api/fields';
       const method = editingField ? 'PUT' : 'POST';
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -409,7 +409,7 @@ export default function GDDTab({ farms }) {
   }
 
   async function deleteField(id) {
-    await fetch(`/api/fields/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/fields/${id}`, { method: 'DELETE' });
     loadFields();
   }
 

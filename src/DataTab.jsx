@@ -146,7 +146,7 @@ function FieldObservations({ field, observations, gddData, onAdd, onDelete }) {
 }
 
 // ── Log observation modal ──
-function LogModal({ field, existingObs, gddData, onSave, onClose }) {
+function LogModal({ field, existingObs, gddData, onSave, onClose, apiFetch }) {
   const cropDef = CROPS[field.crop];
   const [stage, setStage] = useState(() => {
     // Default to next unobserved stage
@@ -171,7 +171,7 @@ function LogModal({ field, existingObs, gddData, onSave, onClose }) {
     setError(null);
     const gddAtObservation = getGDDAtDate(date);
     try {
-      const res = await fetch('/api/observations', {
+      const res = await apiFetch('/api/observations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fieldId: field.id, stage, date, notes: notes.trim(), gddAtObservation }),
@@ -252,7 +252,7 @@ function LogModal({ field, existingObs, gddData, onSave, onClose }) {
 }
 
 // ── Main DataTab ──
-export default function DataTab({ farms }) {
+export default function DataTab({ farms, apiFetch }) {
   const [fields, setFields]           = useState([]);
   const [observations, setObservations] = useState([]);
   const [gddCache, setGddCache]       = useState({});
@@ -264,8 +264,8 @@ export default function DataTab({ farms }) {
     setLoading(true);
     try {
       const [fRes, oRes] = await Promise.all([
-        fetch('/api/fields'),
-        fetch('/api/observations'),
+        apiFetch('/api/fields'),
+        apiFetch('/api/observations'),
       ]);
       const fData = await fRes.json();
       const oData = await oRes.json();
@@ -276,7 +276,7 @@ export default function DataTab({ farms }) {
       const cache = {};
       await Promise.all((Array.isArray(fData) ? fData : []).map(async field => {
         try {
-          const r = await fetch(`/api/fields/${field.id}/gdd`);
+          const r = await apiFetch(`/api/fields/${field.id}/gdd`);
           cache[field.id] = await r.json();
         } catch { cache[field.id] = null; }
       }));
@@ -290,7 +290,7 @@ export default function DataTab({ farms }) {
   useEffect(() => { load(); }, []);
 
   async function deleteObs(id) {
-    await fetch(`/api/observations/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/observations/${id}`, { method: 'DELETE' });
     load();
   }
 
@@ -347,6 +347,7 @@ export default function DataTab({ farms }) {
           gddData={gddCache[logTarget.id]}
           onSave={() => { setLogTarget(null); load(); }}
           onClose={() => setLogTarget(null)}
+          apiFetch={apiFetch}
         />
       )}
     </div>
