@@ -78,6 +78,23 @@ async function sendPush(title, body, tag) {
   return subs.length - dead.length;
 }
 
+// ── Send push to one specific subscription ──
+async function sendPushToOne(subscription, title, body, tag) {
+  const payload = JSON.stringify({ title, body, tag });
+  try {
+    await webpush.sendNotification(subscription, payload);
+    return true;
+  } catch (err) {
+    if (err.statusCode === 410 || err.statusCode === 404) {
+      // Clean up dead sub
+      saveSubs(loadSubs().filter(s => s.endpoint !== subscription.endpoint));
+    } else {
+      console.error('Push error:', err.message);
+    }
+    return false;
+  }
+}
+
 // ── Alert dedup: once per alert-window (6hr block) per farm per type ──
 const alertedThisWindow = new Set();
 function alertWindowKey(farmId, type, date) {
@@ -102,7 +119,8 @@ function dayLabel(dateStr) {
 }
 
 // ── Core check logic — one summary push per day across all farms ──
-async function checkAllFarms(manual = false) {
+// targetSub: if set, only push to that one device (for manual checks)
+async function checkAllFarms(manual = false, targetSub = null) {
   console.log(`[${new Date().toISOString()}] Checking weather (manual=${manual})...`);
 
   // Collect all conditions keyed by date
@@ -209,7 +227,11 @@ async function checkAllFarms(manual = false) {
     }
 
     const body = lines.join(' | ');
-    await sendPush(title, body, `summary-${date}`);
+    if (targetSub) {
+      await sendPushToOne(targetSub, title, body, `summary-${date}`);
+    } else {
+      await sendPush(title, body, `summary-${date}`);
+    }
     console.log(`  [summary] ${date}: ${title}`);
 
     allAlerts.push({ date, label, title, body,
@@ -245,17 +267,24 @@ app.delete('/api/subscribe', (req, res) => {
 
 app.post('/api/test-push', async (req, res) => {
   try {
-    await sendPush('🧪 Test Alert', 'FarmWeather push notifications are working!', 'test');
+    const { subscription } = req.body;
+    if (subscription) {
+      // Send only to the requesting device
+      await sendPushToOne(subscription, '🧪 Test Alert', 'FarmWeather push notifications are working!', 'test');
+    } else {
+      await sendPush('🧪 Test Alert', 'FarmWeather push notifications are working!', 'test');
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── Manual alert check — returns what was (or would have been) sent ──
+// ── Manual alert check — sends only to the requesting device ──
 app.post('/api/check-alerts', async (req, res) => {
   try {
-    const alerts = await checkAllFarms(true); // manual=true bypasses dedup
+    const { subscription } = req.body;
+    const alerts = await checkAllFarms(true, subscription || null);
     res.json({ ok: true, count: alerts.length, alerts });
   } catch (err) {
     res.status(500).json({ error: err.message });

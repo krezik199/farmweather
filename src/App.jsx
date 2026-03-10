@@ -156,10 +156,22 @@ function NotificationPanel({ onClose }) {
     setLoading(false);
   }
 
+  async function getMySubscription() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      return await reg.pushManager.getSubscription();
+    } catch { return null; }
+  }
+
   async function sendTest() {
     setLoading(true); setMsg(''); setAlertResults(null);
     try {
-      const res = await fetch('/api/test-push', { method: 'POST' });
+      const subscription = await getMySubscription();
+      const res = await fetch('/api/test-push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription }),
+      });
       if (res.ok) setMsg('📲 Test notification sent!');
       else setMsg('❌ Failed to send test.');
     } catch { setMsg('❌ Error sending test.'); }
@@ -169,7 +181,12 @@ function NotificationPanel({ onClose }) {
   async function checkNow() {
     setChecking(true); setMsg(''); setAlertResults(null);
     try {
-      const res = await fetch('/api/check-alerts', { method: 'POST' });
+      const subscription = await getMySubscription();
+      const res = await fetch('/api/check-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subscription }),
+      });
       const data = await res.json();
       setAlertResults(data.alerts || []);
       if (data.alerts.length === 0) setMsg('');
