@@ -502,6 +502,8 @@ app.get('/api/fields', requireAuth, (req, res) => {
 app.post('/api/fields', requireAuth, (req, res) => {
   const { name, farmId, crop, plantingDate } = req.body;
   if (!name || !farmId || !crop || !plantingDate) return res.status(400).json({ error: 'Missing required fields' });
+  const today = new Date().toISOString().split('T')[0];
+  if (plantingDate > today) return res.status(400).json({ error: 'Planting date cannot be in the future' });
   const fields = loadFields();
   const field = { id: Date.now(), userId: req.session.userId, name, farmId: parseInt(farmId), crop, variety: req.body.variety || '', plantingDate, createdAt: new Date().toISOString() };
   fields.push(field);

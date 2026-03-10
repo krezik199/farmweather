@@ -114,7 +114,11 @@ function FieldCard({ field, farms, onEdit, onDelete }) {
   useEffect(() => {
     apiFetch(`/api/fields/${field.id}/gdd`)
       .then(r => r.json())
-      .then(d => { setGddData(d); setLoading(false); })
+      .then(d => {
+        if (d?.error) { setError(d.error); setLoading(false); return; }
+        setGddData(d);
+        setLoading(false);
+      })
       .catch(() => { setError("Failed to load GDD"); setLoading(false); });
   }, [field.id]);
 
@@ -378,6 +382,8 @@ export default function GDDTab({ farms, apiFetch }) {
     if (!form.name.trim()) { setSaveError("Please enter a field name."); return; }
     if (!farmId)           { setSaveError("Please select a farm location."); return; }
     if (!form.plantingDate){ setSaveError("Please enter a planting date."); return; }
+    const today = new Date().toISOString().split('T')[0];
+    if (form.plantingDate > today){ setSaveError("Planting date cannot be in the future."); return; }
     setSaveError(null);
     setSaving(true);
     try {
