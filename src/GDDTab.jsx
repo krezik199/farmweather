@@ -105,7 +105,7 @@ function StageProgress({ crop, totalGDD }) {
   );
 }
 
-function FieldCard({ field, farms, onEdit, onDelete }) {
+function FieldCard({ field, farms, onEdit, onDelete, apiFetch }) {
   const [gddData, setGddData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -447,7 +447,7 @@ export default function GDDTab({ farms, apiFetch }) {
       )}
 
       {fields.map(field => (
-        <FieldCard key={field.id} field={field} farms={farms} onEdit={openEdit} onDelete={deleteField} />
+        <FieldCard key={field.id} field={field} farms={farms} onEdit={openEdit} onDelete={deleteField} apiFetch={apiFetch} />
       ))}
 
       {/* Add/Edit Modal */}
