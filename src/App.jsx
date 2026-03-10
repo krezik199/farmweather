@@ -236,11 +236,12 @@ function NotificationPanel({ onClose }) {
                 ) : (
                   <>
                     <div style={{ fontSize:12, fontWeight:700, color:'#f59e0b', marginBottom:8 }}>
-                      {alertResults.length} alert{alertResults.length !== 1 ? 's' : ''} sent
+                      {alertResults.length} notification{alertResults.length !== 1 ? 's' : ''} sent
                     </div>
                     {alertResults.map((a, i) => (
-                      <div key={i} style={{ fontSize:12, color:'#e2e8f0', padding:'4px 0', borderBottom: i < alertResults.length-1 ? '1px solid #1e293b' : 'none' }}>
-                        {ALERT_ICONS[a.type] || '⚠️'} <strong>{a.farm}</strong> · {a.label} · {a.msg.split(' at ')[0]}
+                      <div key={i} style={{ padding:'8px 0', borderBottom: i < alertResults.length-1 ? '1px solid #1e293b' : 'none' }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:'#e2e8f0', marginBottom:3 }}>{a.title}</div>
+                        <div style={{ fontSize:11, color:'#475569', lineHeight:1.5 }}>{a.body}</div>
                       </div>
                     ))}
                   </>

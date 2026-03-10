@@ -96,75 +96,119 @@ function dayLabel(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
-// ── Core check logic — returns list of alerts fired ──
+// ── Core check logic — one summary push per day across all farms ──
 async function checkAllFarms(manual = false) {
   console.log(`[${new Date().toISOString()}] Checking weather (manual=${manual})...`);
-  const allAlerts = [];
+
+  // Collect all conditions keyed by date
+  // dayMap[date] = { frost: [{farm, low, threshold}], rain: [{farm, prob, amt}], wind: [{farm, speed, gusts}], heat: [{farm, high}] }
+  const dayMap = {};
 
   for (const farm of FARMS) {
     try {
       const data = await fetchWeather(farm);
-      const farmAlerts = [];
 
-      // Check each of the next LOOKAHEAD_DAYS days
       for (let i = 0; i < LOOKAHEAD_DAYS; i++) {
-        const date      = data.daily.time[i];
-        const low       = data.daily.temperature_2m_min[i];
-        const high      = data.daily.temperature_2m_max[i];
-        const rainProb  = data.daily.precipitation_probability_max[i];
-        const rainAmt   = data.daily.precipitation_sum[i];
-        const maxWind   = data.daily.wind_speed_10m_max[i];
-        const maxGusts  = data.daily.wind_gusts_10m_max[i];
-        const label     = dayLabel(date);
-        const dayText   = i === 0 ? 'tonight' : `on ${label}`;
+        const date     = data.daily.time[i];
+        const low      = data.daily.temperature_2m_min[i];
+        const high     = data.daily.temperature_2m_max[i];
+        const rainProb = data.daily.precipitation_probability_max[i];
+        const rainAmt  = data.daily.precipitation_sum[i];
+        const maxWind  = data.daily.wind_speed_10m_max[i];
+        const maxGusts = data.daily.wind_gusts_10m_max[i];
 
-        // ── Frost / freeze ──
-        for (const threshold of FROST_THRESHOLDS) {
-          const key = alertWindowKey(farm.id, `frost-${threshold.temp}`, date);
-          if (low <= threshold.temp && (manual || !alertedThisWindow.has(key))) {
-            alertedThisWindow.add(key);
-            const msg = `Low of ${Math.round(low)}°F expected ${dayText} at ${farm.name}.`;
-            await sendPush(`${threshold.emoji} ${threshold.label} — ${farm.name}`, msg, `frost-${farm.id}-${date}`);
-            farmAlerts.push({ type: 'frost', farm: farm.name, date, label, msg: `${threshold.label}: ${msg}` });
-            console.log(`  [frost] ${farm.name} ${date}: ${Math.round(low)}°F`);
-          }
+        if (!dayMap[date]) dayMap[date] = { frost:[], rain:[], wind:[], heat:[] };
+
+        // Frost — only the worst threshold per farm per day
+        const worstFrost = FROST_THRESHOLDS.find(t => low <= t.temp);
+        if (worstFrost) {
+          dayMap[date].frost.push({ farm: farm.name, low, threshold: worstFrost });
         }
 
-        // ── Rain ──
-        const rainKey = alertWindowKey(farm.id, 'rain', date);
-        if ((rainProb >= RAIN_PROB_THRESHOLD || rainAmt >= RAIN_AMT_THRESHOLD) && (manual || !alertedThisWindow.has(rainKey))) {
-          alertedThisWindow.add(rainKey);
-          const msg = `${rainProb}% chance of rain (${rainAmt.toFixed(2)}") ${dayText} at ${farm.name}.`;
-          await sendPush(`🌧️ Rain Expected — ${farm.name}`, msg, `rain-${farm.id}-${date}`);
-          farmAlerts.push({ type: 'rain', farm: farm.name, date, label, msg });
-          console.log(`  [rain] ${farm.name} ${date}: ${rainProb}% / ${rainAmt}"`);
+        if (rainProb >= RAIN_PROB_THRESHOLD || rainAmt >= RAIN_AMT_THRESHOLD) {
+          dayMap[date].rain.push({ farm: farm.name, prob: rainProb, amt: rainAmt });
         }
 
-        // ── Wind ──
-        const windKey = alertWindowKey(farm.id, 'wind', date);
-        if (maxWind >= WIND_THRESHOLD && (manual || !alertedThisWindow.has(windKey))) {
-          alertedThisWindow.add(windKey);
-          const msg = `Winds ${Math.round(maxWind)} mph, gusts to ${Math.round(maxGusts)} mph ${dayText} at ${farm.name}. Check spray conditions.`;
-          await sendPush(`💨 High Wind Alert — ${farm.name}`, msg, `wind-${farm.id}-${date}`);
-          farmAlerts.push({ type: 'wind', farm: farm.name, date, label, msg });
-          console.log(`  [wind] ${farm.name} ${date}: ${Math.round(maxWind)} mph`);
+        if (maxWind >= WIND_THRESHOLD) {
+          dayMap[date].wind.push({ farm: farm.name, speed: Math.round(maxWind), gusts: Math.round(maxGusts) });
         }
 
-        // ── Heat ──
-        const heatKey = alertWindowKey(farm.id, 'heat', date);
-        if (high >= HEAT_THRESHOLD && (manual || !alertedThisWindow.has(heatKey))) {
-          alertedThisWindow.add(heatKey);
-          const msg = `High of ${Math.round(high)}°F expected ${dayText} at ${farm.name}.`;
-          await sendPush(`🌡️ Heat Alert — ${farm.name}`, msg, `heat-${farm.id}-${date}`);
-          farmAlerts.push({ type: 'heat', farm: farm.name, date, label, msg });
-          console.log(`  [heat] ${farm.name} ${date}: ${Math.round(high)}°F`);
+        if (high >= HEAT_THRESHOLD) {
+          dayMap[date].heat.push({ farm: farm.name, high });
         }
       }
-
-      allAlerts.push(...farmAlerts);
     } catch (err) {
-      console.error(`  Error checking ${farm.name}:`, err.message);
+      console.error(`  Error fetching ${farm.name}:`, err.message);
     }
+  }
+
+  // Now send one notification per day that has any alerts
+  const allAlerts = [];
+  const sortedDates = Object.keys(dayMap).sort();
+
+  for (const date of sortedDates) {
+    const day = dayMap[date];
+    const label = dayLabel(date);
+    const dateIndex = sortedDates.indexOf(date);
+    const hasAny = day.frost.length || day.rain.length || day.wind.length || day.heat.length;
+    if (!hasAny) continue;
+
+    // Dedup key — one notification per day per check window
+    const key = alertWindowKey('all', 'summary', date);
+    if (!manual && alertedThisWindow.has(key)) continue;
+    alertedThisWindow.add(key);
+
+    // Build title — use worst frost level if present, otherwise generic
+    const worstOverall = day.frost.length
+      ? FROST_THRESHOLDS.find(t => day.frost.some(f => f.threshold.temp === t.temp))
+      : null;
+
+    const titleParts = [];
+    if (worstOverall)      titleParts.push(`${worstOverall.emoji} ${worstOverall.label}`);
+    if (day.rain.length)   titleParts.push('🌧️ Rain');
+    if (day.wind.length)   titleParts.push('💨 Wind');
+    if (day.heat.length)   titleParts.push('🌡️ Heat');
+
+    const title = `${label.charAt(0).toUpperCase() + label.slice(1)}: ${titleParts.join(' · ')}`;
+
+    // Build body lines
+    const lines = [];
+
+    if (day.frost.length) {
+      // Group farms by frost level
+      const byLevel = {};
+      for (const f of day.frost) {
+        const lbl = f.threshold.label;
+        if (!byLevel[lbl]) byLevel[lbl] = [];
+        byLevel[lbl].push(`${f.farm} (${Math.round(f.low)}°F)`);
+      }
+      for (const [lbl, farms] of Object.entries(byLevel)) {
+        lines.push(`${lbl}: ${farms.join(', ')}`);
+      }
+    }
+
+    if (day.rain.length) {
+      const farmList = day.rain.map(r => `${r.farm} (${r.prob}%)`).join(', ');
+      lines.push(`Rain: ${farmList}`);
+    }
+
+    if (day.wind.length) {
+      const worst = day.wind.reduce((a, b) => b.speed > a.speed ? b : a);
+      const farmList = day.wind.map(w => w.farm).join(', ');
+      lines.push(`Wind ${worst.speed} mph, gusts ${worst.gusts} mph: ${farmList}`);
+    }
+
+    if (day.heat.length) {
+      const farmList = day.heat.map(h => `${h.farm} (${Math.round(h.high)}°F)`).join(', ');
+      lines.push(`Heat: ${farmList}`);
+    }
+
+    const body = lines.join(' | ');
+    await sendPush(title, body, `summary-${date}`);
+    console.log(`  [summary] ${date}: ${title}`);
+
+    allAlerts.push({ date, label, title, body,
+      frost: day.frost, rain: day.rain, wind: day.wind, heat: day.heat });
   }
 
   return allAlerts;
