@@ -284,17 +284,196 @@ const WIND_THRESHOLD      = 20;
 const HEAT_THRESHOLD      = 95;
 const LOOKAHEAD_DAYS      = 3;
 
+// ── NWS grid point cache (permanent — grid points don't change) ──
+const nwsGridCache = new Map(); // key: `${lat},${lon}` -> { office, gridX, gridY }
+const NWS_HEADERS = { 'User-Agent': 'FarmWeather/1.0 (farmweather@hyerfarms.com)' };
+
+async function getNWSGridPoint(lat, lon) {
+  const key = `${lat},${lon}`;
+  if (nwsGridCache.has(key)) return nwsGridCache.get(key);
+  const res = await fetch(`https://api.weather.gov/points/${lat},${lon}`, { headers: NWS_HEADERS });
+  if (!res.ok) throw new Error(`NWS points lookup failed (${res.status}) for ${lat},${lon}`);
+  const data = await res.json();
+  const { cwa: office, gridX, gridY, forecastHourly, forecastGridData } = data.properties;
+  const grid = { office, gridX, gridY, forecastHourly, forecastGridData };
+  nwsGridCache.set(key, grid);
+  return grid;
+}
+
+// Converts m/s to mph
+function msToMph(ms) { return ms == null ? null : Math.round(ms * 2.23694); }
+// Converts celsius to fahrenheit
+function cToF(c) { return c == null ? null : (c * 9/5) + 32; }
+// Converts mm to inches
+function mmToIn(mm) { return mm == null ? null : mm / 25.4; }
+
+// Parse NWS ISO duration values like "2019-07-04T18:00:00+00:00/PT3H"
+function parseNWSTimeSeries(values, targetTimes, transform = v => v) {
+  // Build a map of hour -> value from the interval-based NWS format
+  const map = new Map();
+  for (const { validTime, value } of values) {
+    const [timeStr, durationStr] = validTime.split('/');
+    const start = new Date(timeStr);
+    // Parse duration: PT1H, PT3H, P1D, etc.
+    const hours = (() => {
+      const h = durationStr.match(/PT?(\d+)H/);
+      const d = durationStr.match(/P(\d+)D/);
+      if (h) return parseInt(h[1]);
+      if (d) return parseInt(d[1]) * 24;
+      return 1;
+    })();
+    for (let i = 0; i < hours; i++) {
+      const t = new Date(start.getTime() + i * 3600000);
+      const key = t.toISOString().slice(0, 13); // "2024-03-15T14"
+      map.set(key, transform(value));
+    }
+  }
+  return targetTimes.map(t => {
+    const key = new Date(t).toISOString().slice(0, 13);
+    return map.get(key) ?? null;
+  });
+}
+
 async function fetchWeather(farm) {
-  const url =
-    `https://api.open-meteo.com/v1/forecast` +
-    `?latitude=${farm.lat}&longitude=${farm.lon}` +
-    `&daily=temperature_2m_min,temperature_2m_max,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max` +
-    `&hourly=precipitation,precipitation_probability,temperature_2m,wind_speed_10m` +
-    `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
-    `&timezone=America%2FLos_Angeles&forecast_days=${LOOKAHEAD_DAYS + 1}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Weather fetch failed for ${farm.name}`);
-  return res.json();
+  const { office, gridX, gridY, forecastHourly, forecastGridData } =
+    await getNWSGridPoint(farm.lat, farm.lon);
+
+  // Fetch hourly forecast + gridded data in parallel
+  const [hourlyRes, gridRes] = await Promise.all([
+    fetch(forecastHourly, { headers: NWS_HEADERS }),
+    fetch(forecastGridData, { headers: NWS_HEADERS }),
+  ]);
+  if (!hourlyRes.ok) throw new Error(`NWS hourly forecast failed (${hourlyRes.status})`);
+  if (!gridRes.ok)   throw new Error(`NWS grid data failed (${gridRes.status})`);
+
+  const [hourlyData, gridData] = await Promise.all([hourlyRes.json(), gridRes.json()]);
+  const props = gridData.properties;
+
+  // ── Build hourly array from NWS hourly periods (next 7 days = 168 hours) ──
+  const hourlyPeriods = hourlyData.properties.periods.slice(0, 168);
+  const hourlyTimes = hourlyPeriods.map(p => p.startTime);
+
+  const hourly = {
+    time:                     hourlyTimes,
+    temperature_2m:           hourlyPeriods.map(p => p.temperature), // already °F
+    wind_speed_10m:           hourlyPeriods.map(p => {
+      const match = String(p.windSpeed).match(/(\d+)/);
+      return match ? parseInt(match[1]) : 0;
+    }),
+    wind_direction_10m:       hourlyPeriods.map(p => {
+      const dirs = {N:0,NNE:22,NE:45,ENE:67,E:90,ESE:112,SE:135,SSE:157,S:180,SSW:202,SW:225,WSW:247,W:270,WNW:292,NW:315,NNW:337};
+      return dirs[p.windDirection] ?? 0;
+    }),
+    precipitation_probability: hourlyPeriods.map(p => p.probabilityOfPrecipitation?.value ?? 0),
+    precipitation:             parseNWSTimeSeries(
+      props.quantitativePrecipitation?.values || [],
+      hourlyTimes,
+      v => mmToIn(v)
+    ),
+    weather_code:              hourlyPeriods.map(p => {
+      // Map NWS shortForecast to approximate WMO weather codes
+      const f = (p.shortForecast || '').toLowerCase();
+      if (f.includes('thunder'))                    return 95;
+      if (f.includes('snow') || f.includes('blizzard')) return 71;
+      if (f.includes('sleet') || f.includes('freezing')) return 67;
+      if (f.includes('rain') && f.includes('heavy')) return 65;
+      if (f.includes('showers') || f.includes('rain')) return 61;
+      if (f.includes('drizzle'))                    return 51;
+      if (f.includes('fog'))                        return 45;
+      if (f.includes('overcast') || f.includes('cloudy') && f.includes('mostly')) return 3;
+      if (f.includes('partly') || f.includes('partly cloudy'))  return 2;
+      if (f.includes('sunny') || f.includes('clear'))           return 0;
+      return 1;
+    }),
+  };
+
+  // ── Build daily summary from gridded data (7 days) ──
+  const tz = 'America/Los_Angeles';
+  const todayPacific = new Date().toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+  const [tm, td, ty] = todayPacific.split('/');
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(`${ty}-${tm}-${td}T12:00:00-08:00`);
+    d.setDate(d.getDate() + i);
+    return d.toISOString().split('T')[0];
+  });
+
+  function dailyFromGrid(gridValues, transform = v => v) {
+    return days.map(day => {
+      const vals = [];
+      for (const { validTime, value } of (gridValues || [])) {
+        if (value == null) continue;
+        const t = new Date(validTime.split('/')[0]);
+        const dateStr = t.toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+        const [m, dd, y] = dateStr.split('/');
+        if (`${y}-${m}-${dd}` === day) vals.push(transform(value));
+      }
+      return vals;
+    });
+  }
+
+  const tempMaxVals  = dailyFromGrid(props.maxTemperature?.values,  cToF);
+  const tempMinVals  = dailyFromGrid(props.minTemperature?.values,  cToF);
+  const windMaxVals  = dailyFromGrid(props.windSpeed?.values,        msToMph);
+  const gustMaxVals  = dailyFromGrid(props.windGust?.values,         msToMph);
+  const precipVals   = dailyFromGrid(props.quantitativePrecipitation?.values, v => mmToIn(v));
+  const precipProbVals = dailyFromGrid(props.probabilityOfPrecipitation?.values);
+
+  // Get sunrise/sunset from hourly periods
+  function getSunriseSunset(dayStr) {
+    // NWS doesn't provide sunrise/sunset directly, use astronomical calc
+    const d = new Date(dayStr + 'T12:00:00-08:00');
+    const lat = farm.lat * Math.PI / 180;
+    const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+    const decl = -23.45 * Math.cos((360/365) * (doy + 10) * Math.PI/180) * Math.PI/180;
+    const ha = Math.acos(-Math.tan(lat) * Math.tan(decl)) * 180/Math.PI;
+    const sunrise = 12 - ha/15;
+    const sunset  = 12 + ha/15;
+    const toTime = (h) => {
+      const base = new Date(dayStr + 'T00:00:00-08:00');
+      base.setMinutes(Math.round(h * 60));
+      return base.toISOString();
+    };
+    return { sunrise: toTime(sunrise), sunset: toTime(sunset) };
+  }
+
+  // Get dominant weather code per day from hourly
+  function dailyWeatherCode(day) {
+    const dayHours = hourly.time
+      .map((t, i) => ({ t, code: hourly.weather_code[i] }))
+      .filter(({ t }) => t.startsWith(day));
+    if (!dayHours.length) return 1;
+    return dayHours.reduce((max, { code }) => (code || 0) > max ? code : max, 0);
+  }
+
+  const daily = {
+    time: days,
+    temperature_2m_max:            days.map((_, i) => tempMaxVals[i].length  ? Math.max(...tempMaxVals[i])  : null),
+    temperature_2m_min:            days.map((_, i) => tempMinVals[i].length  ? Math.min(...tempMinVals[i])  : null),
+    precipitation_sum:             days.map((_, i) => precipVals[i].length   ? precipVals[i].reduce((a,b) => a + b, 0) : 0),
+    precipitation_probability_max: days.map((_, i) => precipProbVals[i].length ? Math.max(...precipProbVals[i]) : 0),
+    wind_speed_10m_max:            days.map((_, i) => windMaxVals[i].length  ? Math.max(...windMaxVals[i])  : 0),
+    wind_gusts_10m_max:            days.map((_, i) => gustMaxVals[i].length  ? Math.max(...gustMaxVals[i])  : 0),
+    wind_direction_10m_dominant:   days.map(() => 0),
+    weather_code:                  days.map(d => dailyWeatherCode(d)),
+    sunrise:                       days.map(d => getSunriseSunset(d).sunrise),
+    sunset:                        days.map(d => getSunriseSunset(d).sunset),
+  };
+
+  // ── Current conditions from most recent hourly period ──
+  const cur = hourlyPeriods[0];
+  const windMatch = String(cur?.windSpeed || '0').match(/(\d+)/);
+  const current = {
+    temperature_2m:       cur?.temperature ?? null,
+    apparent_temperature: cur?.temperature ?? null,
+    relative_humidity_2m: parseNWSTimeSeries(props.relativeHumidity?.values || [], [hourlyTimes[0]], v => v)[0] ?? null,
+    precipitation:        0,
+    weather_code:         hourly.weather_code[0],
+    wind_speed_10m:       windMatch ? parseInt(windMatch[1]) : 0,
+    wind_direction_10m:   hourly.wind_direction_10m[0],
+    wind_gusts_10m:       parseNWSTimeSeries(props.windGust?.values || [], [hourlyTimes[0]], msToMph)[0] ?? 0,
+  };
+
+  return { current, hourly, daily };
 }
 
 async function sendPush(title, body, tag) {
@@ -463,6 +642,41 @@ app.get('/api/debug-alerts', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ═══════════════════════════════════════════════
+// WEATHER (auth required, proxied from NWS)
+// ═══════════════════════════════════════════════
+
+// In-memory weather cache: farmId -> { data, cachedAt }
+const weatherCache = new Map();
+const WEATHER_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+app.get('/api/weather/:farmId', requireAuth, async (req, res) => {
+  const farmId = parseInt(req.params.farmId);
+  const userFarms = getUserFarms(req.session.userId, req.session.username);
+  let farm = userFarms.find(f => f.id === farmId);
+  if (!farm) {
+    const oldIdx = farmId - 1;
+    if (oldIdx >= 0 && oldIdx < userFarms.length) farm = userFarms[oldIdx];
+  }
+  if (!farm) return res.status(404).json({ error: 'Farm not found' });
+
+  // Return cached result if fresh
+  const cached = weatherCache.get(farmId);
+  if (cached && Date.now() - cached.cachedAt < WEATHER_CACHE_TTL) {
+    return res.json(cached.data);
+  }
+
+  try {
+    const data = await fetchWeather(farm);
+    weatherCache.set(farmId, { data, cachedAt: Date.now() });
+    res.json(data);
+  } catch (err) {
+    console.error(`[Weather] Error for farm ${farm.name}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════
 // FIELDS (auth required, scoped to user)
 // ═══════════════════════════════════════════════
@@ -588,16 +802,42 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
       totalGDD = Math.round(cumulative * 10) / 10;
     }
 
-    const fcastRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${farm.lat}&longitude=${farm.lon}&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=America%2FLos_Angeles&forecast_days=14`);
-    const fcastData = await fcastRes.json();
-    if (!fcastData.daily) throw new Error(`Forecast API error: ${fcastData.reason || JSON.stringify(fcastData)}`);
+    // Use NWS for 7-day forecast GDD projection
+    const { forecastGridData } = await getNWSGridPoint(farm.lat, farm.lon);
+    const nwsFcastRes = await fetch(forecastGridData, { headers: NWS_HEADERS });
+    if (!nwsFcastRes.ok) throw new Error(`NWS forecast failed (${nwsFcastRes.status})`);
+    const nwsFcastData = await nwsFcastRes.json();
+    const nwsProps = nwsFcastData.properties;
+    const tz = 'America/Los_Angeles';
+    const todayStr = new Date().toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+    const [ftm, ftd, fty] = todayStr.split('/');
+    const fcastDays14 = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(`${fty}-${ftm}-${ftd}T12:00:00-08:00`);
+      d.setDate(d.getDate() + i);
+      return d.toISOString().split('T')[0];
+    });
+    function nwsDailyMinMax(gridValues, transform, day) {
+      const vals = [];
+      for (const { validTime, value } of (gridValues || [])) {
+        if (value == null) continue;
+        const t = new Date(validTime.split('/')[0]);
+        const ds = t.toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+        const [m, dd, y] = ds.split('/');
+        if (`${y}-${m}-${dd}` === day) vals.push(transform(value));
+      }
+      return vals;
+    }
     let forecastCumulative = totalGDD;
-    const forecastDays = fcastData.daily.time.map((date, i) => {
-      const tmax = Math.min(fcastData.daily.temperature_2m_max[i], 86);
-      const tmin = Math.max(fcastData.daily.temperature_2m_min[i], BASE);
+    const forecastDays = fcastDays14.map(date => {
+      const maxVals = nwsDailyMinMax(nwsProps.maxTemperature?.values, cToF, date);
+      const minVals = nwsDailyMinMax(nwsProps.minTemperature?.values, cToF, date);
+      const tmaxRaw = maxVals.length ? Math.max(...maxVals) : 70;
+      const tminRaw = minVals.length ? Math.min(...minVals) : 45;
+      const tmax = Math.min(tmaxRaw, 86);
+      const tmin = Math.max(tminRaw, BASE);
       const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
       forecastCumulative += gdd;
-      return { date, tmax: fcastData.daily.temperature_2m_max[i], tmin: fcastData.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, projected: Math.round(forecastCumulative * 10) / 10 };
+      return { date, tmax: tmaxRaw, tmin: tminRaw, gdd: Math.round(gdd * 10) / 10, projected: Math.round(forecastCumulative * 10) / 10 };
     });
 
     const CROP_STAGES = {

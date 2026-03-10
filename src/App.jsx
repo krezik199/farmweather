@@ -65,20 +65,7 @@ async function apiFetch(url, options = {}) {
   });
 }
 
-async function fetchWeather(lat, lon) {
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,` +
-    `wind_speed_10m,wind_direction_10m,wind_gusts_10m` +
-    `&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,` +
-    `wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,sunrise,sunset` +
-    `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch` +
-    `&timezone=America%2FLos_Angeles&forecast_days=7`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Weather fetch failed");
-  return res.json();
-}
+// fetchWeather is now handled server-side via /api/weather/:farmId
 
 // ── Push notification helpers ──
 function urlBase64ToUint8Array(base64String) {
@@ -493,7 +480,9 @@ export default function FarmWeather() {
     setLoading(l => ({ ...l, [farm.id]: true }));
     setErrors(e  => ({ ...e,  [farm.id]: null }));
     try {
-      const data = await fetchWeather(farm.lat, farm.lon);
+      const res = await apiFetch(`/api/weather/${farm.id}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
       setWeather(w => ({ ...w, [farm.id]: data }));
       setLastRefresh(new Date());
     } catch {
@@ -501,7 +490,7 @@ export default function FarmWeather() {
     } finally {
       setLoading(l => ({ ...l, [farm.id]: false }));
     }
-  }, []);
+  }, [apiFetch]);
 
   // Load farms from server when logged in, then fetch weather for each
   useEffect(() => {
