@@ -318,7 +318,7 @@ app.get('/api/debug-alerts', async (req, res) => {
 });
 
 // ── Fields storage (shared across all users) ──
-const FIELDS_FILE = path.join(__dirname, 'fields.json');
+const FIELDS_FILE = path.join('/data', 'fields.json');
 function loadFields() {
   try { return JSON.parse(fs.readFileSync(FIELDS_FILE, 'utf8')); } catch { return []; }
 }
@@ -493,7 +493,7 @@ app.get('/api/fields/:id/gdd', async (req, res) => {
 
 
 // ── Observations storage ──
-const OBS_FILE = path.join(__dirname, 'observations.json');
+const OBS_FILE = path.join('/data', 'observations.json');
 function loadObs() {
   try { return JSON.parse(fs.readFileSync(OBS_FILE, 'utf8')); } catch { return []; }
 }
@@ -529,6 +529,36 @@ app.delete('/api/observations/:id', (req, res) => {
   const id = parseInt(req.params.id);
   saveObs(loadObs().filter(o => o.id !== id));
   res.json({ ok: true });
+});
+
+// ── Backup & Restore endpoints ──
+app.get('/api/backup', (req, res) => {
+  res.json({
+    fields: loadFields(),
+    observations: loadObs(),
+  });
+});
+
+app.post('/api/restore/fields', (req, res) => {
+  try {
+    const fields = req.body;
+    if (!Array.isArray(fields)) return res.status(400).json({ error: 'Expected an array' });
+    saveFields(fields);
+    res.json({ ok: true, count: fields.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/restore/observations', (req, res) => {
+  try {
+    const obs = req.body;
+    if (!Array.isArray(obs)) return res.status(400).json({ error: 'Expected an array' });
+    saveObs(obs);
+    res.json({ ok: true, count: obs.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Serve React app for all other routes
