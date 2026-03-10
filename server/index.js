@@ -291,6 +291,32 @@ app.post('/api/check-alerts', async (req, res) => {
   }
 });
 
+// ── Debug: show raw forecast values used for alert checks ──
+app.get('/api/debug-alerts', async (req, res) => {
+  try {
+    const results = [];
+    for (const farm of FARMS) {
+      const data = await fetchWeather(farm);
+      const days = [];
+      for (let i = 0; i < LOOKAHEAD_DAYS; i++) {
+        days.push({
+          date:     data.daily.time[i],
+          low:      data.daily.temperature_2m_min[i],
+          high:     data.daily.temperature_2m_max[i],
+          rainProb: data.daily.precipitation_probability_max[i],
+          rainAmt:  data.daily.precipitation_sum[i],
+          wind:     data.daily.wind_speed_10m_max[i],
+          gusts:    data.daily.wind_gusts_10m_max[i],
+        });
+      }
+      results.push({ farm: farm.name, days });
+    }
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Fields storage (shared across all users) ──
 const FIELDS_FILE = path.join(__dirname, 'fields.json');
 function loadFields() {
