@@ -187,6 +187,24 @@ async function fetchGDDData(lat, lon, plantingDate) {
   return res.json();
 }
 
+// ── Startup migration: ensure all farmIds are stored as numbers ──
+(function migrateFields() {
+  try {
+    const fields = loadFields();
+    let changed = false;
+    fields.forEach(f => {
+      if (typeof f.farmId !== 'number') {
+        f.farmId = parseInt(f.farmId);
+        changed = true;
+      }
+    });
+    if (changed) {
+      saveFields(fields);
+      console.log('[Migration] Coerced farmId to number for existing fields');
+    }
+  } catch(e) { console.error('[Migration] Error:', e.message); }
+})();
+
 // ── Fields API ──
 app.get('/api/fields', (req, res) => {
   res.json(loadFields());
@@ -198,7 +216,7 @@ app.post('/api/fields', (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   const fields = loadFields();
-  const field = { id: Date.now(), name, farmId, crop, plantingDate, createdAt: new Date().toISOString() };
+  const field = { id: Date.now(), name, farmId: parseInt(farmId), crop, variety: req.body.variety || '', plantingDate, createdAt: new Date().toISOString() };
   fields.push(field);
   saveFields(fields);
   res.json(field);
@@ -227,11 +245,12 @@ app.get('/api/fields/:id/gdd', async (req, res) => {
   const field = fields.find(f => f.id === id);
   if (!field) return res.status(404).json({ error: 'Field not found' });
 
-  const farm = FARMS.find(f => f.id === field.farmId);
-  if (!farm) return res.status(400).json({ error: 'Farm not found' });
+  const farm = FARMS.find(f => f.id === parseInt(field.farmId));
+  if (!farm) return res.status(400).json({ error: `Farm not found — farmId: ${field.farmId} (${typeof field.farmId})` });
 
   try {
     const BASE = 45;
+    console.log(`[GDD] field="${field.name}" farm="${farm.name}" lat=${farm.lat} lon=${farm.lon} planted=${field.plantingDate}`);
 
     // Historical GDD from planting date
     const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
