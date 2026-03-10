@@ -519,13 +519,36 @@ app.put('/api/fields/:id', requireAuth, (req, res) => {
   if (idx === -1) return res.status(404).json({ error: 'Field not found' });
   fields[idx] = { ...fields[idx], ...req.body, id, userId: req.session.userId };
   saveFields(fields);
+  clearGDDCache(id);
   res.json(fields[idx]);
 });
 
 app.delete('/api/fields/:id', requireAuth, (req, res) => {
-  saveFields(loadFields().filter(f => !(f.id === parseInt(req.params.id) && f.userId === req.session.userId)));
+  const delId = parseInt(req.params.id);
+  saveFields(loadFields().filter(f => !(f.id === delId && f.userId === req.session.userId)));
+  clearGDDCache(delId);
   res.json({ ok: true });
 });
+
+// ═══════════════════════════════════════════════
+// GDD CACHE (in-memory, 3-hour TTL)
+// ═══════════════════════════════════════════════
+
+const gddCache = new Map(); // key: `${fieldId}` -> { data, cachedAt }
+const GDD_CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours
+
+function getGDDCache(fieldId) {
+  const entry = gddCache.get(String(fieldId));
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > GDD_CACHE_TTL) { gddCache.delete(String(fieldId)); return null; }
+  return entry.data;
+}
+function setGDDCache(fieldId, data) {
+  gddCache.set(String(fieldId), { data, cachedAt: Date.now() });
+}
+function clearGDDCache(fieldId) {
+  gddCache.delete(String(fieldId));
+}
 
 app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
   const id = parseInt(req.params.id);
@@ -542,6 +565,10 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
     if (oldIdx >= 0 && oldIdx < userFarms.length) farm = userFarms[oldIdx];
   }
   if (!farm) return res.status(400).json({ error: `Farm not found — farmId: ${field.farmId}. Please re-save this field.` });
+
+  // Return cached result if fresh
+  const cached = getGDDCache(id);
+  if (cached) return res.json(cached);
 
   try {
     const BASE = 45;
@@ -596,7 +623,9 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
       return { name: stage.name, gdd: stage.gdd, reached: false, date: null, daysAway: null };
     });
 
-    res.json({ field, farm: farm.name, daily, totalGDD, daysTracked: daily.length, forecastDays, stageProjections });
+    const result = { field, farm: farm.name, daily, totalGDD, daysTracked: daily.length, forecastDays, stageProjections };
+    setGDDCache(id, result);
+    res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
