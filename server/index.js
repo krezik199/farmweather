@@ -813,13 +813,17 @@ const NOAA_CDO_TOKEN = process.env.NOAA_CDO_TOKEN || '';
 
 // Find nearest GHCND station with TMAX/TMIN data to given coordinates
 async function findNearestCDOStation(lat, lon, startDate) {
-  const pad = 0.75; // ~50 mile search radius
+  const pad = 1.5; // ~100 mile search radius
   const extent = `${lat - pad},${lon - pad},${lat + pad},${lon + pad}`;
-  const url = `https://www.ncei.noaa.gov/cdo-web/api/v2/stations?datasetid=GHCND&datatypeid=TMAX,TMIN&extent=${extent}&startdate=${startDate}&enddate=${new Date().toISOString().split('T')[0]}&limit=10`;
+  // Use a fixed recent window for station search — using planting date can exclude valid stations
+  const searchEnd = new Date().toISOString().split('T')[0];
+  const searchStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const url = `https://www.ncei.noaa.gov/cdo-web/api/v2/stations?datasetid=GHCND&datatypeid=TMAX,TMIN&extent=${extent}&startdate=${searchStart}&enddate=${searchEnd}&limit=10`;
   const res = await fetch(url, { headers: { token: NOAA_CDO_TOKEN } });
   if (!res.ok) throw new Error(`CDO station lookup failed (${res.status})`);
   const data = await res.json();
-  if (!data.results || !data.results.length) throw new Error('No CDO stations found near farm');
+  console.log(`[CDO] Station search returned ${data.results?.length || 0} results for extent ${extent}`);
+  if (!data.results || !data.results.length) throw new Error('No CDO stations found near farm — check NOAA_CDO_TOKEN and extent');
   // Pick closest station by straight-line distance
   function dist(s) {
     const dlat = s.latitude - lat, dlon = s.longitude - lon;
