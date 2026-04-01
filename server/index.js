@@ -678,10 +678,83 @@ function saveFields(fields) {
   fs.writeFileSync(FIELDS_FILE, JSON.stringify(fields, null, 2));
 }
 
+const NOAA_CDO_TOKEN = process.env.NOAA_CDO_TOKEN || '';
+
+// Find nearest GHCND station with TMAX/TMIN data to given coordinates
+async function findNearestCDOStation(lat, lon, startDate) {
+  const pad = 0.75; // ~50 mile search radius
+  const extent = `${lat - pad},${lon - pad},${lat + pad},${lon + pad}`;
+  const url = `https://www.ncei.noaa.gov/cdo-web/api/v2/stations?datasetid=GHCND&datatypeid=TMAX,TMIN&extent=${extent}&startdate=${startDate}&enddate=${new Date().toISOString().split('T')[0]}&limit=10`;
+  const res = await fetch(url, { headers: { token: NOAA_CDO_TOKEN } });
+  if (!res.ok) throw new Error(`CDO station lookup failed (${res.status})`);
+  const data = await res.json();
+  if (!data.results || !data.results.length) throw new Error('No CDO stations found near farm');
+  // Pick closest station by straight-line distance
+  function dist(s) {
+    const dlat = s.latitude - lat, dlon = s.longitude - lon;
+    return Math.sqrt(dlat * dlat + dlon * dlon);
+  }
+  return data.results.sort((a, b) => dist(a) - dist(b))[0];
+}
+
+// Fetch historical daily TMAX/TMIN from NOAA CDO as fallback
+async function fetchGDDDataFromCDO(lat, lon, plantingDate) {
+  if (!NOAA_CDO_TOKEN) throw new Error('NOAA_CDO_TOKEN not configured');
+  const end = new Date().toISOString().split('T')[0];
+  const station = await findNearestCDOStation(lat, lon, plantingDate);
+  console.log(`[GDD CDO] Using station: ${station.name} (${station.id})`);
+
+  // CDO limits to 1-year date ranges per request — chunk if needed
+  const start = new Date(plantingDate);
+  const endDate = new Date(end);
+  const allData = {};
+
+  let chunkStart = new Date(start);
+  while (chunkStart <= endDate) {
+    const chunkEnd = new Date(chunkStart);
+    chunkEnd.setFullYear(chunkEnd.getFullYear() + 1);
+    if (chunkEnd > endDate) chunkEnd.setTime(endDate.getTime());
+
+    const url = `https://www.ncei.noaa.gov/cdo-web/api/v2/data?datasetid=GHCND&stationid=${station.id}&datatypeid=TMAX,TMIN&startdate=${chunkStart.toISOString().split('T')[0]}&enddate=${chunkEnd.toISOString().split('T')[0]}&units=standard&limit=1000`;
+    const res = await fetch(url, { headers: { token: NOAA_CDO_TOKEN } });
+    if (!res.ok) throw new Error(`CDO data fetch failed (${res.status})`);
+    const data = await res.json();
+    for (const record of (data.results || [])) {
+      const d = record.date.split('T')[0];
+      if (!allData[d]) allData[d] = {};
+      // CDO standard units: TMAX/TMIN in tenths of °C... actually in °F for 'standard' units
+      allData[d][record.datatype] = record.value;
+    }
+    chunkStart = new Date(chunkEnd);
+    chunkStart.setDate(chunkStart.getDate() + 1);
+  }
+
+  // Build same shape as Open-Meteo response
+  const days = [];
+  let cur = new Date(plantingDate);
+  while (cur <= endDate) {
+    days.push(cur.toISOString().split('T')[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  return {
+    daily: {
+      time: days,
+      temperature_2m_max: days.map(d => allData[d]?.TMAX ?? null),
+      temperature_2m_min: days.map(d => allData[d]?.TMIN ?? null),
+    }
+  };
+}
+
 async function fetchGDDData(lat, lon, plantingDate) {
   const end = new Date().toISOString().split('T')[0];
   const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=America%2FLos_Angeles&start_date=${plantingDate}&end_date=${end}`;
   const res = await fetch(url);
+  if (res.status === 429) {
+    // Rate limited — fall back to NOAA CDO
+    console.warn('[GDD] Open-Meteo rate limited (429), falling back to NOAA CDO...');
+    return fetchGDDDataFromCDO(lat, lon, plantingDate);
+  }
   if (!res.ok) throw new Error(`GDD archive fetch failed (${res.status})`);
   const data = await res.json();
   if (!data.daily) throw new Error(`Archive API error: ${data.reason || JSON.stringify(data)}`);
