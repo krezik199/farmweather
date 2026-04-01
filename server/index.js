@@ -261,11 +261,12 @@ app.delete('/api/farms/:id', requireAuth, (req, res) => {
 // SUBSCRIPTIONS
 // ═══════════════════════════════════════════════
 
-const SUBS_FILE = path.join(__dirname, 'subscriptions.json');
+const SUBS_FILE = path.join(DATA_DIR, 'subscriptions.json');
 function loadSubs() {
   try { return JSON.parse(fs.readFileSync(SUBS_FILE, 'utf8')); } catch { return []; }
 }
 function saveSubs(subs) {
+  ensureDataDir();
   fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2));
 }
 
