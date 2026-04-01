@@ -665,6 +665,137 @@ app.get('/api/weather/:farmId', requireAuth, async (req, res) => {
   }
 });
 
+
+// ═══════════════════════════════════════════════
+// CROPS (per-user, persisted to disk)
+// ═══════════════════════════════════════════════
+
+const CROPS_FILE = path.join(DATA_DIR, 'crops.json');
+
+const DEFAULT_CROPS = {
+  onion: {
+    label: "Onions", emoji: "🧅",
+    varieties: {
+      "Legend":     { dtm: 120 },
+      "Red Carpet": { dtm: 118 },
+      "Cometa":     { dtm: 120 },
+    },
+    stages: [
+      { name: "Emergence",       gdd: 100,  pct: 0.05 },
+      { name: "3-Leaf Stage",    gdd: 400,  pct: 0.20 },
+      { name: "Bulb Initiation", gdd: 800,  pct: 0.40 },
+      { name: "Bulb Fill",       gdd: 1400, pct: 0.70 },
+      { name: "Maturity",        gdd: 2000, pct: 1.00 },
+    ],
+  },
+  potato: {
+    label: "Potatoes", emoji: "🥔",
+    varieties: {
+      "Norkotah":       { dtm: null },
+      "Little Star":    { dtm: null },
+      "Rising Star":    { dtm: null },
+      "Ruby Red":       { dtm: null },
+      "Primabelle":     { dtm: null },
+      "Agata":          { dtm: null },
+      "Purple Majesty": { dtm: null },
+    },
+    stages: [
+      { name: "Emergence",        gdd: 100,  pct: 0.08 },
+      { name: "Tuber Initiation", gdd: 350,  pct: 0.30 },
+      { name: "Tuber Bulking",    gdd: 700,  pct: 0.60 },
+      { name: "Maturity",         gdd: 1200, pct: 1.00 },
+    ],
+  },
+};
+
+function loadAllCrops() {
+  try { return JSON.parse(fs.readFileSync(CROPS_FILE, 'utf8')); } catch { return {}; }
+}
+function saveAllCrops(data) {
+  ensureDataDir();
+  fs.writeFileSync(CROPS_FILE, JSON.stringify(data, null, 2));
+}
+function getUserCrops(userId) {
+  const all = loadAllCrops();
+  if (!all[userId]) {
+    all[userId] = JSON.parse(JSON.stringify(DEFAULT_CROPS));
+    saveAllCrops(all);
+  }
+  return all[userId];
+}
+function saveUserCrops(userId, crops) {
+  const all = loadAllCrops();
+  all[userId] = crops;
+  saveAllCrops(all);
+}
+
+// GET all crops for user
+app.get('/api/crops', requireAuth, (req, res) => {
+  res.json(getUserCrops(req.session.userId));
+});
+
+// POST new crop type
+app.post('/api/crops', requireAuth, (req, res) => {
+  const { key, label, emoji } = req.body;
+  if (!key || !label) return res.status(400).json({ error: 'key and label required' });
+  const crops = getUserCrops(req.session.userId);
+  if (crops[key]) return res.status(409).json({ error: 'Crop key already exists' });
+  crops[key] = { label: label.trim(), emoji: emoji || '🌾', varieties: {}, stages: [] };
+  saveUserCrops(req.session.userId, crops);
+  res.json(crops[key]);
+});
+
+// PUT update crop label/emoji
+app.put('/api/crops/:key', requireAuth, (req, res) => {
+  const crops = getUserCrops(req.session.userId);
+  if (!crops[req.params.key]) return res.status(404).json({ error: 'Crop not found' });
+  const { label, emoji } = req.body;
+  if (label) crops[req.params.key].label = label.trim();
+  if (emoji) crops[req.params.key].emoji = emoji;
+  saveUserCrops(req.session.userId, crops);
+  res.json(crops[req.params.key]);
+});
+
+// DELETE crop type
+app.delete('/api/crops/:key', requireAuth, (req, res) => {
+  const crops = getUserCrops(req.session.userId);
+  if (!crops[req.params.key]) return res.status(404).json({ error: 'Crop not found' });
+  delete crops[req.params.key];
+  saveUserCrops(req.session.userId, crops);
+  res.json({ ok: true });
+});
+
+// POST add variety to a crop
+app.post('/api/crops/:key/varieties', requireAuth, (req, res) => {
+  const { name, dtm } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const crops = getUserCrops(req.session.userId);
+  if (!crops[req.params.key]) return res.status(404).json({ error: 'Crop not found' });
+  crops[req.params.key].varieties[name.trim()] = { dtm: dtm ? parseInt(dtm) : null };
+  saveUserCrops(req.session.userId, crops);
+  res.json({ ok: true });
+});
+
+// DELETE variety from a crop
+app.delete('/api/crops/:key/varieties/:name', requireAuth, (req, res) => {
+  const crops = getUserCrops(req.session.userId);
+  if (!crops[req.params.key]) return res.status(404).json({ error: 'Crop not found' });
+  delete crops[req.params.key].varieties[decodeURIComponent(req.params.name)];
+  saveUserCrops(req.session.userId, crops);
+  res.json({ ok: true });
+});
+
+// PUT replace all stages for a crop
+app.put('/api/crops/:key/stages', requireAuth, (req, res) => {
+  const { stages } = req.body;
+  if (!Array.isArray(stages)) return res.status(400).json({ error: 'stages array required' });
+  const crops = getUserCrops(req.session.userId);
+  if (!crops[req.params.key]) return res.status(404).json({ error: 'Crop not found' });
+  crops[req.params.key].stages = stages;
+  saveUserCrops(req.session.userId, crops);
+  res.json({ ok: true });
+});
+
 // ═══════════════════════════════════════════════
 // FIELDS (auth required, scoped to user)
 // ═══════════════════════════════════════════════
@@ -913,11 +1044,9 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
       return { date, tmax: tmaxRaw, tmin: tminRaw, gdd: Math.round(gdd * 10) / 10, projected: Math.round(forecastCumulative * 10) / 10 };
     });
 
-    const CROP_STAGES = {
-      onion:  [{ name:"Emergence",gdd:100},{name:"3-Leaf Stage",gdd:400},{name:"Bulb Initiation",gdd:800},{name:"Bulb Fill",gdd:1400},{name:"Maturity",gdd:2000}],
-      potato: [{ name:"Emergence",gdd:100},{name:"Tuber Initiation",gdd:350},{name:"Tuber Bulking",gdd:700},{name:"Maturity",gdd:1200}],
-    };
-    const stageProjections = (CROP_STAGES[field.crop] || []).map(stage => {
+    const userCrops = getUserCrops(req.session.userId);
+    const cropStages = userCrops[field.crop]?.stages || [];
+    const stageProjections = cropStages.map(stage => {
       if (totalGDD >= stage.gdd) {
         const reachedDay = daily.find(d => d.cumulative >= stage.gdd);
         return { name: stage.name, gdd: stage.gdd, reached: true, date: reachedDay ? reachedDay.date : null };
