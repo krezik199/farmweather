@@ -285,7 +285,7 @@ const HEAT_THRESHOLD      = 95;
 const LOOKAHEAD_DAYS      = 3;
 
 // ── NWS grid point cache (permanent — grid points don't change) ──
-const nwsGridCache = new Map(); // key: `${lat},${lon}` -> { office, gridX, gridY }
+const nwsGridCache = new Map();
 const NWS_HEADERS = { 'User-Agent': 'FarmWeather/1.0 (farmweather@hyerfarms.com)' };
 
 async function getNWSGridPoint(lat, lon) {
@@ -311,12 +311,10 @@ function mmToIn(mm) { return mm == null ? null : mm / 25.4; }
 
 // Parse NWS ISO duration values like "2019-07-04T18:00:00+00:00/PT3H"
 function parseNWSTimeSeries(values, targetTimes, transform = v => v) {
-  // Build a map of hour -> value from the interval-based NWS format
   const map = new Map();
   for (const { validTime, value } of values) {
     const [timeStr, durationStr] = validTime.split('/');
     const start = new Date(timeStr);
-    // Parse duration: PT1H, PT3H, P1D, etc.
     const hours = (() => {
       const h = durationStr.match(/PT?(\d+)H/);
       const d = durationStr.match(/P(\d+)D/);
@@ -326,7 +324,7 @@ function parseNWSTimeSeries(values, targetTimes, transform = v => v) {
     })();
     for (let i = 0; i < hours; i++) {
       const t = new Date(start.getTime() + i * 3600000);
-      const key = t.toISOString().slice(0, 13); // "2024-03-15T14"
+      const key = t.toISOString().slice(0, 13);
       map.set(key, transform(value));
     }
   }
@@ -340,7 +338,6 @@ async function fetchWeather(farm) {
   const { office, gridX, gridY, forecastHourly, forecastGridData } =
     await getNWSGridPoint(farm.lat, farm.lon);
 
-  // Fetch hourly forecast + gridded data in parallel
   const [hourlyRes, gridRes] = await Promise.all([
     fetch(forecastHourly, { headers: NWS_HEADERS }),
     fetch(forecastGridData, { headers: NWS_HEADERS }),
@@ -351,13 +348,12 @@ async function fetchWeather(farm) {
   const [hourlyData, gridData] = await Promise.all([hourlyRes.json(), gridRes.json()]);
   const props = gridData.properties;
 
-  // ── Build hourly array from NWS hourly periods (next 7 days = 168 hours) ──
   const hourlyPeriods = hourlyData.properties.periods.slice(0, 168);
   const hourlyTimes = hourlyPeriods.map(p => p.startTime);
 
   const hourly = {
     time:                     hourlyTimes,
-    temperature_2m:           hourlyPeriods.map(p => p.temperature), // already °F
+    temperature_2m:           hourlyPeriods.map(p => p.temperature),
     wind_speed_10m:           hourlyPeriods.map(p => {
       const match = String(p.windSpeed).match(/(\d+)/);
       return match ? parseInt(match[1]) : 0;
@@ -373,7 +369,6 @@ async function fetchWeather(farm) {
       v => mmToIn(v)
     ),
     weather_code:              hourlyPeriods.map(p => {
-      // Map NWS shortForecast to approximate WMO weather codes
       const f = (p.shortForecast || '').toLowerCase();
       if (f.includes('thunder'))                    return 95;
       if (f.includes('snow') || f.includes('blizzard')) return 71;
@@ -389,7 +384,6 @@ async function fetchWeather(farm) {
     }),
   };
 
-  // ── Build daily summary from gridded data (7 days) ──
   const tz = 'America/Los_Angeles';
   const todayPacific = new Date().toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
   const [tm, td, ty] = todayPacific.split('/');
@@ -416,13 +410,11 @@ async function fetchWeather(farm) {
   const tempMaxVals  = dailyFromGrid(props.maxTemperature?.values,  cToF);
   const tempMinVals  = dailyFromGrid(props.minTemperature?.values,  cToF);
   const windMaxVals  = dailyFromGrid(props.windSpeed?.values,        kphToMph);
-  const gustMaxVals  = dailyFromGrid(props.windGust?.values,          kphToMph);
+  const gustMaxVals  = dailyFromGrid(props.windGust?.values,         kphToMph);
   const precipVals   = dailyFromGrid(props.quantitativePrecipitation?.values, v => mmToIn(v));
   const precipProbVals = dailyFromGrid(props.probabilityOfPrecipitation?.values);
 
-  // Get sunrise/sunset from hourly periods
   function getSunriseSunset(dayStr) {
-    // NWS doesn't provide sunrise/sunset directly, use astronomical calc
     const d = new Date(dayStr + 'T12:00:00-08:00');
     const lat = farm.lat * Math.PI / 180;
     const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
@@ -438,7 +430,6 @@ async function fetchWeather(farm) {
     return { sunrise: toTime(sunrise), sunset: toTime(sunset) };
   }
 
-  // Get dominant weather code per day from hourly
   function dailyWeatherCode(day) {
     const dayHours = hourly.time
       .map((t, i) => ({ t, code: hourly.weather_code[i] }))
@@ -461,7 +452,6 @@ async function fetchWeather(farm) {
     sunset:                        days.map(d => getSunriseSunset(d).sunset),
   };
 
-  // ── Current conditions from most recent hourly period ──
   const cur = hourlyPeriods[0];
   const windMatch = String(cur?.windSpeed || '0').match(/(\d+)/);
   const current = {
@@ -524,7 +514,6 @@ function dayLabel(dateStr) {
   return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
-// Push alerts check against all Hyer farms (the main farm set)
 async function checkAllFarms(manual = false, targetSub = null, farmsToCheck = HYER_FARMS) {
   console.log(`[${new Date().toISOString()}] Checking weather (manual=${manual})...`);
   const dayMap = {};
@@ -618,7 +607,6 @@ app.post('/api/test-push', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Manual alert check — uses the requesting user's farms
 app.post('/api/check-alerts', requireAuth, async (req, res) => {
   try {
     const { subscription } = req.body;
@@ -644,12 +632,10 @@ app.get('/api/debug-alerts', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
 // ═══════════════════════════════════════════════
 // WEATHER (auth required, proxied from NWS)
 // ═══════════════════════════════════════════════
 
-// In-memory weather cache: farmId -> { data, cachedAt }
 const weatherCache = new Map();
 const WEATHER_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
@@ -663,7 +649,6 @@ app.get('/api/weather/:farmId', requireAuth, async (req, res) => {
   }
   if (!farm) return res.status(404).json({ error: 'Farm not found' });
 
-  // Return cached result if fresh
   const cached = weatherCache.get(farmId);
   if (cached && Date.now() - cached.cachedAt < WEATHER_CACHE_TTL) {
     return res.json(cached.data);
@@ -711,7 +696,6 @@ async function fetchGDDData(lat, lon, plantingDate) {
   } catch(e) { console.error('[Migration] Error:', e.message); }
 })();
 
-// Fields are scoped to the requesting user
 app.get('/api/fields', requireAuth, (req, res) => {
   const fields = loadFields().filter(f => f.userId === req.session.userId);
   res.json(fields);
@@ -747,23 +731,37 @@ app.delete('/api/fields/:id', requireAuth, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════
-// GDD CACHE (in-memory, 3-hour TTL)
+// GDD CACHE — disk-persisted, 12-hour TTL
+// Survives Render cold starts; on 429 serves stale data silently
 // ═══════════════════════════════════════════════
 
-const gddCache = new Map(); // key: `${fieldId}` -> { data, cachedAt }
-const GDD_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
+const GDD_CACHE_FILE = path.join(DATA_DIR, 'gdd_cache.json');
+const GDD_CACHE_TTL  = 12 * 60 * 60 * 1000; // 12 hours
+
+function loadGDDCacheFile() {
+  try { return JSON.parse(fs.readFileSync(GDD_CACHE_FILE, 'utf8')); } catch { return {}; }
+}
+function saveGDDCacheFile(cache) {
+  ensureDataDir();
+  try { fs.writeFileSync(GDD_CACHE_FILE, JSON.stringify(cache)); } catch (e) { console.error('[GDD Cache] Save error:', e.message); }
+}
 
 function getGDDCache(fieldId) {
-  const entry = gddCache.get(String(fieldId));
+  const cache = loadGDDCacheFile();
+  const entry = cache[String(fieldId)];
   if (!entry) return null;
-  if (Date.now() - entry.cachedAt > GDD_CACHE_TTL) { gddCache.delete(String(fieldId)); return null; }
-  return entry.data;
+  // Return data regardless of age — caller decides whether it's fresh
+  return entry;
 }
 function setGDDCache(fieldId, data) {
-  gddCache.set(String(fieldId), { data, cachedAt: Date.now() });
+  const cache = loadGDDCacheFile();
+  cache[String(fieldId)] = { data, cachedAt: Date.now() };
+  saveGDDCacheFile(cache);
 }
 function clearGDDCache(fieldId) {
-  gddCache.delete(String(fieldId));
+  const cache = loadGDDCacheFile();
+  delete cache[String(fieldId)];
+  saveGDDCacheFile(cache);
 }
 
 app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
@@ -771,20 +769,19 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
   const field = loadFields().find(f => f.id === id && f.userId === req.session.userId);
   if (!field) return res.status(404).json({ error: 'Field not found' });
 
-  // Look up farm from this user's farm list
-  // Try by id first, then fall back to matching by position (for fields saved with old static ids 1-7)
   const userFarms = getUserFarms(req.session.userId, req.session.username);
   let farm = userFarms.find(f => f.id === parseInt(field.farmId));
   if (!farm) {
-    // Old static IDs were 1-7 in order; try matching by index position as fallback
     const oldIdx = parseInt(field.farmId) - 1;
     if (oldIdx >= 0 && oldIdx < userFarms.length) farm = userFarms[oldIdx];
   }
   if (!farm) return res.status(400).json({ error: `Farm not found — farmId: ${field.farmId}. Please re-save this field.` });
 
-  // Return cached result if fresh
+  // Check cache — return immediately if fresh (< 12 hours old)
   const cached = getGDDCache(id);
-  if (cached) return res.json(cached);
+  if (cached && Date.now() - cached.cachedAt < GDD_CACHE_TTL) {
+    return res.json(cached.data);
+  }
 
   try {
     const BASE = 45;
@@ -868,7 +865,15 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
     const result = { field, farm: farm.name, daily, totalGDD, daysTracked: daily.length, forecastDays, stageProjections };
     setGDDCache(id, result);
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+
+  } catch (err) {
+    // On any error (including 429 rate limit), serve stale cache if available
+    if (cached) {
+      console.warn(`[GDD] Fetch failed for field ${id} (${err.message}), serving stale cache from ${new Date(cached.cachedAt).toLocaleString()}`);
+      return res.json(cached.data);
+    }
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ═══════════════════════════════════════════════
@@ -885,7 +890,6 @@ function saveObs(obs) {
 }
 
 app.get('/api/observations', requireAuth, (req, res) => {
-  // Only return observations for this user's fields
   const userFieldIds = new Set(loadFields().filter(f => f.userId === req.session.userId).map(f => f.id));
   res.json(loadObs().filter(o => userFieldIds.has(o.fieldId)));
 });
@@ -893,7 +897,6 @@ app.get('/api/observations', requireAuth, (req, res) => {
 app.post('/api/observations', requireAuth, (req, res) => {
   const { fieldId, stage, date, notes, gddAtObservation } = req.body;
   if (!fieldId || !stage || !date) return res.status(400).json({ error: 'Missing required fields' });
-  // Verify field belongs to user
   const field = loadFields().find(f => f.id === parseInt(fieldId) && f.userId === req.session.userId);
   if (!field) return res.status(403).json({ error: 'Field not found or not yours' });
   const obs = loadObs();
