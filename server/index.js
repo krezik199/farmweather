@@ -1001,12 +1001,18 @@ app.get('/api/fields/:id/gdd', requireAuth, async (req, res) => {
       const data = await fetchGDDData(farm.lat, farm.lon, field.plantingDate);
       let cumulative = 0;
       daily = data.daily.time.map((date, i) => {
-        const tmax = Math.min(data.daily.temperature_2m_max[i], 86);
-        const tmin = Math.max(data.daily.temperature_2m_min[i], BASE);
+        const rawMax = data.daily.temperature_2m_max[i];
+        const rawMin = data.daily.temperature_2m_min[i];
+        // Skip days with missing data (CDO can have 45-60 day lag on recent records)
+        if (rawMax == null || rawMin == null) {
+          return { date, tmax: null, tmin: null, gdd: 0, cumulative: Math.round(cumulative * 10) / 10, missing: true };
+        }
+        const tmax = Math.min(rawMax, 86);
+        const tmin = Math.max(rawMin, BASE);
         const gdd = Math.max(0, ((tmax + tmin) / 2) - BASE);
         cumulative += gdd;
-        return { date, tmax: data.daily.temperature_2m_max[i], tmin: data.daily.temperature_2m_min[i], gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
-      });
+        return { date, tmax: rawMax, tmin: rawMin, gdd: Math.round(gdd * 10) / 10, cumulative: Math.round(cumulative * 10) / 10 };
+      }).filter(d => !d.missing);
       totalGDD = Math.round(cumulative * 10) / 10;
     }
 
