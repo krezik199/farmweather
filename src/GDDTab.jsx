@@ -1,6 +1,218 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const BASE_TEMP = 45;
+
+// ─── GDD Accumulation Chart ───────────────────────────────────────────────────
+
+const STAGE_COLORS = ["#f59e0b","#a78bfa","#34d399","#f472b6","#fb923c"];
+
+function GDDChartModal({ gddData, field, cropDef, onClose }) {
+  const svgRef = useRef(null);
+  if (!gddData) return null;
+
+  const { daily, forecastDays, stageProjections, totalGDD } = gddData;
+
+  // Build unified data series
+  // Actual: daily cumulative (historical)
+  // Projected: forecastDays projected cumulative
+  const actualPoints = daily.map(d => ({ date: d.date, value: d.cumulative, actual: true }));
+  // forecastDays starts from today — connect to last actual point
+  const projectedPoints = forecastDays.map(d => ({ date: d.date, value: d.projected, actual: false }));
+
+  // All dates for x-axis
+  const allPoints = [...actualPoints, ...projectedPoints];
+  if (allPoints.length === 0) return null;
+
+  const allValues = allPoints.map(p => p.value);
+  const stageGDDs = (stageProjections || []).map(s => s.gdd);
+  const maxValue = Math.max(...allValues, ...stageGDDs, totalGDD) * 1.08;
+  const minValue = 0;
+
+  // SVG dimensions
+  const W = 340, H = 220;
+  const PAD = { top: 20, right: 16, bottom: 44, left: 46 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+
+  // Scales
+  const xScale = i => (i / (allPoints.length - 1)) * chartW;
+  const yScale = v => chartH - ((v - minValue) / (maxValue - minValue)) * chartH;
+
+  // Build SVG path strings
+  function pointsToPath(points, startIdx, endIdx) {
+    const slice = points.slice(startIdx, endIdx + 1);
+    return slice.map((p, i) => {
+      const x = xScale(startIdx + i);
+      const y = yScale(p.value);
+      return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join(' ');
+  }
+
+  const lastActualIdx = actualPoints.length - 1;
+  const actualPath = pointsToPath(allPoints, 0, lastActualIdx);
+  // Projected path starts from last actual point
+  const projectedPath = lastActualIdx < allPoints.length - 1
+    ? pointsToPath(allPoints, lastActualIdx, allPoints.length - 1)
+    : '';
+
+  // X-axis labels — show ~5 evenly spaced dates
+  const labelCount = Math.min(5, allPoints.length);
+  const labelIndices = Array.from({ length: labelCount }, (_, i) =>
+    Math.round(i * (allPoints.length - 1) / (labelCount - 1))
+  );
+
+  function formatDate(dateStr) {
+    const d = new Date(dateStr + 'T12:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  // Y-axis grid lines
+  const yTicks = [];
+  const tickStep = maxValue <= 500 ? 100 : maxValue <= 1000 ? 200 : maxValue <= 2000 ? 400 : 500;
+  for (let v = 0; v <= maxValue; v += tickStep) {
+    yTicks.push(v);
+  }
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.82)', display:'flex', alignItems:'flex-end', zIndex:200 }}
+      onClick={onClose}>
+      <div style={{ background:'#0f1f35', border:'1px solid #1e3a5f', borderRadius:'20px 20px 0 0', padding:'20px 16px 32px', width:'100%', maxWidth:430, margin:'0 auto' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+          <div>
+            <div style={{ fontSize:15, fontWeight:700, color:'#f0f9ff' }}>
+              {cropDef?.emoji} {field.name} — GDD Curve
+            </div>
+            <div style={{ fontSize:11, color:'#475569', marginTop:1 }}>
+              Base {BASE_TEMP}°F · Planting {formatDate(field.plantingDate)}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:'transparent', border:'none', color:'#475569', fontSize:22, cursor:'pointer', lineHeight:1 }}>✕</button>
+        </div>
+
+        {/* Legend */}
+        <div style={{ display:'flex', gap:16, marginBottom:10, marginTop:6 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+            <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#38bdf8" strokeWidth="2.5"/></svg>
+            <span style={{ fontSize:11, color:'#94a3b8' }}>Actual</span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+            <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#38bdf8" strokeWidth="2" strokeDasharray="4,3" opacity="0.6"/></svg>
+            <span style={{ fontSize:11, color:'#94a3b8' }}>Projected</span>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+            <svg width="10" height="10"><line x1="5" y1="0" x2="5" y2="10" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="2,2"/></svg>
+            <span style={{ fontSize:11, color:'#94a3b8' }}>Growth stages</span>
+          </div>
+        </div>
+
+        {/* SVG Chart */}
+        <div style={{ overflowX:'auto' }}>
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display:'block' }}>
+            <g transform={`translate(${PAD.left},${PAD.top})`}>
+
+              {/* Y-axis grid lines + labels */}
+              {yTicks.map(v => (
+                <g key={v}>
+                  <line x1={0} y1={yScale(v)} x2={chartW} y2={yScale(v)}
+                    stroke="#1e3a5f" strokeWidth="1" strokeDasharray="3,3"/>
+                  <text x={-6} y={yScale(v)} textAnchor="end" dominantBaseline="middle"
+                    fill="#475569" fontSize="9">{v}</text>
+                </g>
+              ))}
+
+              {/* Stage threshold vertical lines */}
+              {(stageProjections || []).map((stage, i) => {
+                const stageGDD = stage.gdd;
+                if (stageGDD > maxValue) return null;
+                const color = STAGE_COLORS[i % STAGE_COLORS.length];
+                // Find x position: which data point is closest to this GDD
+                const stageIdx = allPoints.findIndex(p => p.value >= stageGDD);
+                if (stageIdx === -1) return null;
+                const x = xScale(stageIdx);
+                return (
+                  <g key={stage.name}>
+                    <line x1={x} y1={0} x2={x} y2={chartH}
+                      stroke={color} strokeWidth="1.2" strokeDasharray="4,3" opacity="0.8"/>
+                    {/* Rotated label */}
+                    <text
+                      x={x + 3} y={6}
+                      fill={color} fontSize="8.5" fontWeight="600"
+                      style={{ userSelect:'none' }}>
+                      {stage.name}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Shaded area under actual line */}
+              {actualPoints.length > 1 && (() => {
+                const areaPath = `${actualPath} L ${xScale(lastActualIdx).toFixed(1)} ${chartH} L 0 ${chartH} Z`;
+                return <path d={areaPath} fill="#38bdf8" opacity="0.06"/>;
+              })()}
+
+              {/* Actual line */}
+              {actualPoints.length > 1 && (
+                <path d={actualPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+              )}
+
+              {/* Projected dashed line */}
+              {projectedPath && (
+                <path d={projectedPath} fill="none" stroke="#38bdf8" strokeWidth="2"
+                  strokeDasharray="5,4" opacity="0.6" strokeLinecap="round"/>
+              )}
+
+              {/* Today marker dot (junction of actual/projected) */}
+              {actualPoints.length > 0 && (
+                <circle cx={xScale(lastActualIdx)} cy={yScale(totalGDD)}
+                  r="4" fill="#38bdf8" stroke="#0f1f35" strokeWidth="2"/>
+              )}
+
+              {/* X-axis baseline */}
+              <line x1={0} y1={chartH} x2={chartW} y2={chartH} stroke="#1e3a5f" strokeWidth="1"/>
+
+              {/* X-axis labels */}
+              {labelIndices.map(idx => (
+                <text key={idx} x={xScale(idx)} y={chartH + 12} textAnchor="middle"
+                  fill="#475569" fontSize="8.5">
+                  {formatDate(allPoints[idx].date)}
+                </text>
+              ))}
+
+              {/* "Today" label */}
+              {lastActualIdx > 0 && lastActualIdx < allPoints.length - 1 && (
+                <text x={xScale(lastActualIdx)} y={chartH + 22} textAnchor="middle"
+                  fill="#38bdf8" fontSize="8" fontWeight="600">TODAY</text>
+              )}
+
+            </g>
+          </svg>
+        </div>
+
+        {/* Current GDD callout */}
+        <div style={{ display:'flex', justifyContent:'center', gap:24, marginTop:8 }}>
+          <div style={{ textAlign:'center' }}>
+            <div style={{ fontSize:11, color:'#475569', textTransform:'uppercase', letterSpacing:'0.08em' }}>Current</div>
+            <div style={{ fontSize:22, fontWeight:700, color:'#38bdf8' }}>{totalGDD}</div>
+            <div style={{ fontSize:10, color:'#475569' }}>GDD accumulated</div>
+          </div>
+          {projectedPoints.length > 0 && (
+            <div style={{ textAlign:'center' }}>
+              <div style={{ fontSize:11, color:'#475569', textTransform:'uppercase', letterSpacing:'0.08em' }}>In 7 days</div>
+              <div style={{ fontSize:22, fontWeight:700, color:'#64748b' }}>
+                {projectedPoints[Math.min(6, projectedPoints.length-1)]?.value ?? '—'}
+              </div>
+              <div style={{ fontSize:10, color:'#475569' }}>GDD projected</div>
+            </div>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
 
 const S = {
   card:{ background:"#0f1f35", border:"1px solid #1e3a5f", borderRadius:16, padding:18, marginTop:14 },
@@ -68,6 +280,7 @@ function FieldCard({ field, farms, crops, onEdit, onDelete, apiFetch }) {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [expanded, setExpanded] = useState(false);
+  const [showChart, setShowChart] = useState(false);
 
   useEffect(() => {
     apiFetch(`/api/fields/${field.id}/gdd`)
@@ -134,17 +347,28 @@ function FieldCard({ field, farms, crops, onEdit, onDelete, apiFetch }) {
         <div style={{ marginTop:14 }}>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:12 }}>
             {[
-              { label:"Total GDD", value: gddData.totalGDD, sub:`base ${BASE_TEMP}°F`, color:"#38bdf8", big:true },
+              { label:"Total GDD", value: gddData.totalGDD, sub:`base ${BASE_TEMP}°F`, color:"#38bdf8", big:true, tappable:true },
               { label:"Days",      value: daysSincePlanting, sub:"since planting",      color:"#e2e8f0", big:true },
               { label:"Planted",   value: planted.toLocaleDateString('en-US',{month:'short',day:'numeric'}), sub: planted.getFullYear(), color:"#e2e8f0", big:false },
-            ].map(({label,value,sub,color,big}) => (
-              <div key={label} style={{ background:"#0f1f35", borderRadius:10, padding:"10px 12px", border:"1px solid #1e3a5f", textAlign:"center" }}>
+            ].map(({label,value,sub,color,big,tappable}) => (
+              <div key={label}
+                onClick={tappable ? () => setShowChart(true) : undefined}
+                style={{ background:"#0f1f35", borderRadius:10, padding:"10px 12px", border:`1px solid ${tappable?"#2a4a7f":"#1e3a5f"}`, textAlign:"center", cursor:tappable?"pointer":"default" }}>
                 <div style={{ fontSize:11, color:"#475569", textTransform:"uppercase", letterSpacing:"0.08em" }}>{label}</div>
                 <div style={{ fontSize: big?24:13, fontWeight:700, color, marginTop:2 }}>{value}</div>
-                <div style={{ fontSize:10, color:"#475569" }}>{sub}</div>
+                <div style={{ fontSize:10, color:tappable?"#2563eb":"#475569" }}>{tappable?"📈 tap for chart":sub}</div>
               </div>
             ))}
           </div>
+
+          {showChart && (
+            <GDDChartModal
+              gddData={gddData}
+              field={field}
+              cropDef={crops[field.crop]}
+              onClose={() => setShowChart(false)}
+            />
+          )}
 
           {nextStage && (() => {
             const blend = blendedStageDate(nextStage);
