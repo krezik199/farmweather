@@ -25,7 +25,8 @@ function GDDChartModal({ gddData, field, cropDef, onClose }) {
 
   const allValues = allPoints.map(p => p.value);
   const stageGDDs = (stageProjections || []).map(s => s.gdd);
-  const maxValue = Math.max(...allValues, ...stageGDDs, totalGDD) * 1.08;
+  // Scale to actual + projected data only — stage lines draw wherever they fall
+  const maxValue = Math.max(...allValues, totalGDD) * 1.15;
   const minValue = 0;
 
   // SVG dimensions
@@ -126,20 +127,18 @@ function GDDChartModal({ gddData, field, cropDef, onClose }) {
               {/* Stage threshold vertical lines */}
               {(stageProjections || []).map((stage, i) => {
                 const stageGDD = stage.gdd;
-                if (stageGDD > maxValue) return null;
                 const color = STAGE_COLORS[i % STAGE_COLORS.length];
-                // Find x position: which data point is closest to this GDD
+                // Find x position: which data point first reaches this GDD
                 const stageIdx = allPoints.findIndex(p => p.value >= stageGDD);
-                if (stageIdx === -1) return null;
+                if (stageIdx === -1) return null; // beyond projection window — skip
                 const x = xScale(stageIdx);
+                // If the threshold is above the visible y range, draw line from top but still label it
+                const yTop = stageGDD > maxValue ? 0 : yScale(stageGDD);
                 return (
                   <g key={stage.name}>
-                    <line x1={x} y1={0} x2={x} y2={chartH}
+                    <line x1={x} y1={yTop} x2={x} y2={chartH}
                       stroke={color} strokeWidth="1.2" strokeDasharray="4,3" opacity="0.8"/>
-                    {/* Rotated label */}
-                    <text
-                      x={x + 3} y={6}
-                      fill={color} fontSize="8.5" fontWeight="600"
+                    <text x={x + 3} y={6} fill={color} fontSize="8.5" fontWeight="600"
                       style={{ userSelect:'none' }}>
                       {stage.name}
                     </text>
