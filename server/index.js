@@ -881,19 +881,160 @@ async function fetchGDDDataFromCDO(lat, lon, plantingDate) {
   };
 }
 
+// Extract daily min/max temps from NWS grid data for a specific date range.
+// NWS gridpoint data includes recent observed values, not just forecasts —
+// this gives us actuals for the last ~7 days to bridge CDO's data lag.
+async function fetchNWSHistoricalTemps(lat, lon, startDate, endDate) {
+  const { forecastGridData } = await getNWSGridPoint(lat, lon);
+  const res = await fetch(forecastGridData, { headers: NWS_HEADERS });
+  if (!res.ok) throw new Error(`NWS grid fetch failed (${res.status})`);
+  const data = await res.json();
+  const props = data.properties;
+  const tz = 'America/Los_Angeles';
+
+  const result = {};
+  const start = new Date(startDate + 'T12:00:00-08:00');
+  const end   = new Date(endDate   + 'T12:00:00-08:00');
+
+  // Iterate each day in range
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dayStr = d.toISOString().split('T')[0];
+    const maxVals = [], minVals = [];
+
+    for (const { validTime, value } of (props.maxTemperature?.values || [])) {
+      if (value == null) continue;
+      const t = new Date(validTime.split('/')[0]);
+      const ds = t.toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+      const [m, dd, y] = ds.split('/');
+      if (`${y}-${m}-${dd}` === dayStr) maxVals.push(cToF(value));
+    }
+    for (const { validTime, value } of (props.minTemperature?.values || [])) {
+      if (value == null) continue;
+      const t = new Date(validTime.split('/')[0]);
+      const ds = t.toLocaleDateString('en-US', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' });
+      const [m, dd, y] = ds.split('/');
+      if (`${y}-${m}-${dd}` === dayStr) minVals.push(cToF(value));
+    }
+
+    if (maxVals.length && minVals.length) {
+      result[dayStr] = {
+        TMAX: Math.max(...maxVals),
+        TMIN: Math.min(...minVals),
+      };
+    }
+  }
+
+  return result; // { 'YYYY-MM-DD': { TMAX, TMIN }, ... }
+}
+
 async function fetchGDDData(lat, lon, plantingDate) {
   const end = new Date().toISOString().split('T')[0];
   const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=America%2FLos_Angeles&start_date=${plantingDate}&end_date=${end}`;
   const res = await fetch(url);
-  if (res.status === 429) {
-    // Rate limited — fall back to NOAA CDO
-    console.warn('[GDD] Open-Meteo rate limited (429), falling back to NOAA CDO...');
-    return fetchGDDDataFromCDO(lat, lon, plantingDate);
+
+  // ── Happy path: Open-Meteo responded normally ──
+  if (res.ok) {
+    const data = await res.json();
+    if (!data.daily) throw new Error(`Archive API error: ${data.reason || JSON.stringify(data)}`);
+    console.log(`[GDD] Open-Meteo OK — ${data.daily.time.length} days from ${plantingDate}`);
+    return data;
   }
-  if (!res.ok) throw new Error(`GDD archive fetch failed (${res.status})`);
-  const data = await res.json();
-  if (!data.daily) throw new Error(`Archive API error: ${data.reason || JSON.stringify(data)}`);
-  return data;
+
+  // ── Rate limited (429) — build hybrid CDO + NWS dataset ──
+  if (res.status === 429) {
+    console.warn('[GDD] Open-Meteo rate limited (429) — building CDO + NWS hybrid...');
+
+    // 1. Fetch whatever CDO has (may only go through ~45-60 days ago)
+    let cdoData = null;
+    let cdoLastDate = null;
+    try {
+      cdoData = await fetchGDDDataFromCDO(lat, lon, plantingDate);
+      // Find the last date CDO actually returned data for (not null)
+      const times = cdoData.daily.time;
+      for (let i = times.length - 1; i >= 0; i--) {
+        if (cdoData.daily.temperature_2m_max[i] != null && cdoData.daily.temperature_2m_min[i] != null) {
+          cdoLastDate = times[i];
+          break;
+        }
+      }
+      console.log(`[GDD] CDO data covers up to: ${cdoLastDate || 'nothing'}`);
+    } catch (cdoErr) {
+      console.error(`[GDD] CDO also failed: ${cdoErr.message}`);
+    }
+
+    // 2. If CDO has a gap between its last date and yesterday, fill with NWS actuals
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    let nwsTemps = {};
+    if (cdoLastDate && cdoLastDate < yesterdayStr) {
+      // Advance one day past CDO's last date to avoid double-counting
+      const gapStart = new Date(cdoLastDate + 'T12:00:00');
+      gapStart.setDate(gapStart.getDate() + 1);
+      const gapStartStr = gapStart.toISOString().split('T')[0];
+
+      if (gapStartStr <= yesterdayStr) {
+        console.log(`[GDD] Fetching NWS actuals to bridge gap: ${gapStartStr} → ${yesterdayStr}`);
+        try {
+          nwsTemps = await fetchNWSHistoricalTemps(lat, lon, gapStartStr, yesterdayStr);
+          console.log(`[GDD] NWS bridged ${Object.keys(nwsTemps).length} days`);
+        } catch (nwsErr) {
+          console.warn(`[GDD] NWS bridge fetch failed: ${nwsErr.message} — gap will remain`);
+        }
+      }
+    }
+
+    // 3. If CDO failed entirely, try NWS for the full date range (last ~7 days only)
+    if (!cdoData && Object.keys(nwsTemps).length === 0) {
+      console.warn('[GDD] CDO unavailable — attempting NWS-only for recent days');
+      try {
+        nwsTemps = await fetchNWSHistoricalTemps(lat, lon, plantingDate, yesterdayStr);
+      } catch (nwsErr) {
+        console.error(`[GDD] NWS fallback also failed: ${nwsErr.message}`);
+      }
+    }
+
+    // 4. Merge CDO + NWS into unified daily arrays covering plantingDate → today
+    const allDays = [];
+    let cur = new Date(plantingDate + 'T12:00:00');
+    const endDate = new Date(end + 'T12:00:00');
+    while (cur <= endDate) {
+      allDays.push(cur.toISOString().split('T')[0]);
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    // Build lookup from CDO
+    const cdoLookup = {};
+    if (cdoData) {
+      cdoData.daily.time.forEach((d, i) => {
+        if (cdoData.daily.temperature_2m_max[i] != null && cdoData.daily.temperature_2m_min[i] != null) {
+          cdoLookup[d] = {
+            TMAX: cdoData.daily.temperature_2m_max[i],
+            TMIN: cdoData.daily.temperature_2m_min[i],
+          };
+        }
+      });
+    }
+
+    const merged = allDays.map(d => {
+      const src = cdoLookup[d] || nwsTemps[d] || null;
+      return src ? src.TMAX : null; // TMAX placeholder
+    });
+
+    console.log(`[GDD] Hybrid result: ${allDays.length} days, CDO: ${Object.keys(cdoLookup).length}, NWS bridge: ${Object.keys(nwsTemps).length}`);
+
+    return {
+      daily: {
+        time: allDays,
+        temperature_2m_max: allDays.map(d => (cdoLookup[d] || nwsTemps[d])?.TMAX ?? null),
+        temperature_2m_min: allDays.map(d => (cdoLookup[d] || nwsTemps[d])?.TMIN ?? null),
+      },
+      _source: 'hybrid-cdo-nws',
+    };
+  }
+
+  throw new Error(`GDD archive fetch failed (${res.status})`);
 }
 
 (function migrateFields() {
