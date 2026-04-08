@@ -280,13 +280,26 @@ function FieldCard({ field, farms, crops, onEdit, onDelete, apiFetch }) {
   const [error, setError]     = useState(null);
   const [expanded, setExpanded] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
+  function loadGDD() {
+    setLoading(true); setError(null);
     apiFetch(`/api/fields/${field.id}/gdd`)
       .then(r => r.json())
       .then(d => { if (d?.error) { setError(d.error); setLoading(false); return; } setGddData(d); setLoading(false); })
       .catch(() => { setError("Failed to load GDD"); setLoading(false); });
-  }, [field.id]);
+  }
+
+  async function refreshGDD() {
+    setRefreshing(true);
+    try {
+      await apiFetch(`/api/fields/${field.id}/clear-gdd-cache`, { method: 'POST' });
+    } catch {}
+    loadGDD();
+    setRefreshing(false);
+  }
+
+  useEffect(() => { loadGDD(); }, [field.id]);
 
   const farm    = farms.find(f => f.id === field.farmId);
   const cropDef = crops[field.crop];
@@ -334,6 +347,9 @@ function FieldCard({ field, farms, crops, onEdit, onDelete, apiFetch }) {
           </div>
         </div>
         <div style={{ display:"flex", gap:6 }}>
+          <button style={S.btnSm()} onClick={refreshGDD} disabled={refreshing} title="Refresh GDD data">
+            {refreshing ? "⏳" : "↺"}
+          </button>
           <button style={S.btnSm()} onClick={() => onEdit(field)}>✎</button>
           <button style={S.btnSm("danger")} onClick={() => onDelete(field.id)}>🗑</button>
         </div>

@@ -633,6 +633,26 @@ app.get('/api/debug-alerts', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Clear GDD cache for a specific field (admin or field owner)
+app.post('/api/fields/:id/clear-gdd-cache', requireAuth, (req, res) => {
+  const id = parseInt(req.params.id);
+  const field = loadFields().find(f => f.id === id && f.userId === req.session.userId);
+  if (!field && req.session.role !== 'admin') return res.status(403).json({ error: 'Not authorized' });
+  clearGDDCache(id);
+  console.log(`[GDD Cache] Cleared for field ${id} by ${req.session.username}`);
+  res.json({ ok: true, message: `GDD cache cleared for field ${id}` });
+});
+
+// Clear ALL GDD caches (admin only)
+app.post('/api/admin/clear-gdd-cache', requireAdmin, (req, res) => {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(GDD_CACHE_FILE, JSON.stringify({}));
+    console.log(`[GDD Cache] All caches cleared by ${req.session.username}`);
+    res.json({ ok: true, message: 'All GDD caches cleared' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ═══════════════════════════════════════════════
 // WEATHER (auth required, proxied from NWS)
 // ═══════════════════════════════════════════════
